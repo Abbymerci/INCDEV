@@ -1,375 +1,389 @@
 """
-COO Incident Console — incidents feature module (single-file backend).
- 
-Everything the Incident Console dashboard needs on the API side lives in
-this one file: enums, Pydantic models, mock data, and a FastAPI
-``APIRouter`` with every endpoint. Nothing outside this file is required.
- 
-HOW TO MOUNT INTO YOUR EXISTING APP
-------------------------------------
-    from incidents_router import router as incidents_router
-    app.include_router(incidents_router)
- 
-That's it. The router already carries the "/api" prefix and the
-"incidents" tag, so it plugs straight into whatever FastAPI app you
-already have — same process, same port, same middleware.
- 
-If your app enforces auth via a shared dependency (e.g. Ping OAuth +
-AD-group checks), apply it when you include the router rather than
-inside this file, so this module stays auth-agnostic and easy to test
-on its own:
- 
+COO Major Incident Dashboard — backend for the target-mockup dashboard
+(the 4-tile KPI design: P1&P2 WFT-Wide / COO Caused / COO Impacted /
+TCOO Caused). Single file: models, mock data, and a FastAPI APIRouter.
+
+This is the companion to IncidentDashboard.tsx — pair them the same way
+as the earlier incidents_router.py + IncidentConsole.tsx:
+
+    from incident_dashboard_router import router as incident_dashboard_router
+    app.include_router(incident_dashboard_router)
+
+Routes already carry the "/api" prefix, so they plug straight into
+whatever FastAPI app you already have. If your app enforces auth via a
+shared dependency (e.g. Ping OAuth + AD-group checks), apply it when you
+include the router rather than inside this file:
+
     app.include_router(
-        incidents_router,
+        incident_dashboard_router,
         dependencies=[Depends(your_ping_oauth_dependency)],
     )
- 
+
+ENDPOINTS
+---------
+    GET /api/health
+    GET /api/incidents/summary                         -> tile counts
+    GET /api/incidents?tile=...&page=...&page_size=...  -> incident list
+    GET /api/incidents/{incident_number}                -> full detail
+
+`tile` accepts: P1_P2_WFT | COO_CAUSED | COO_IMPACTED | TCOO_CAUSED
+(omit it to get every incident, matching the dashboard's default view).
+
 SWAPPING IN REAL DATA
 ----------------------
-Everything below "Mock data" is a stand-in for a real datastore. The
-only two things the route handlers touch are ``INCIDENTS`` (a list of
-``Incident``) and ``build_incident_detail()``. Replace those with real
-repository/query calls when you're ready — the route functions and
-response models don't need to change.
- 
+Everything the routes touch lives in `INCIDENTS` and `build_incident_detail()`
+below. Replace those with a real repository/query layer whenever you're
+ready — the route functions and response models don't need to change.
+
 RUNNING THIS FILE STANDALONE (optional, for local testing only)
 ------------------------------------------------------------------
-    python incidents_router.py
-    # -> serves the same routes on http://localhost:8000, with permissive
-    #    CORS, so you can point the companion frontend script at it
-    #    without your real app running at all.
+    python incident_dashboard_router.py
+    # -> serves http://localhost:8000 with permissive CORS, so
+    #    IncidentDashboard.tsx can point at it without your real app
+    #    running at all.
 """
- 
+
 from __future__ import annotations
- 
+
+# pyright: reportMissingImports=false
+
 from datetime import datetime, timedelta
 from enum import Enum
- 
+
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
- 
+from pydantic import BaseModel
+
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
- 
- 
+
+
 class Priority(str, Enum):
     P1 = "P1"
     P2 = "P2"
     P3 = "P3"
- 
- 
+    P4 = "P4"
+
+
 class IncidentStatus(str, Enum):
     BRIDGE_ACTIVE = "Bridge Active"
     PENDING_VENDOR = "Pending Vendor"
     INVESTIGATING = "Investigating"
- 
- 
+
+
+class Category(str, Enum):
+    COO_CAUSED = "COO Caused"
+    COO_IMPACTED = "COO Impacted"
+    TCOO_CAUSED = "TCOO Caused"
+    WFT_WIDE = "WFT-Wide"
+
+
+class TileFilter(str, Enum):
+    P1_P2_WFT = "P1_P2_WFT"
+    COO_CAUSED = "COO_CAUSED"
+    COO_IMPACTED = "COO_IMPACTED"
+    TCOO_CAUSED = "TCOO_CAUSED"
+
+
 class Incident(BaseModel):
-    incident_number: str = Field(..., description='e.g. "INC-98214"')
-    priority: Priority
-    mim: bool = Field(..., description="Whether a Major Incident Manager is engaged")
-    opened_at: datetime
-    status: IncidentStatus
-    causal_cio: str
-    impacted_biz: str
- 
-    @property
-    def duration_minutes(self) -> int:
-        delta = datetime.utcnow() - self.opened_at
-        return max(int(delta.total_seconds() // 60), 0)
- 
- 
-class IncidentOut(BaseModel):
     incident_number: str
     priority: Priority
-    mim: bool
-    opened_at: datetime
-    duration_minutes: int
+    category: Category
     status: IncidentStatus
-    causal_cio: str
-    impacted_biz: str
- 
-    @classmethod
-    def from_incident(cls, incident: Incident) -> "IncidentOut":
-        return cls(
-            incident_number=incident.incident_number,
-            priority=incident.priority,
-            mim=incident.mim,
-            opened_at=incident.opened_at,
-            duration_minutes=incident.duration_minutes,
-            status=incident.status,
-            causal_cio=incident.causal_cio,
-            impacted_biz=incident.impacted_biz,
-        )
- 
- 
+    opened_at: datetime
+    root_cause: str
+    customer_impact: str
+
+
 class TimelineEntry(BaseModel):
     timestamp: datetime
     author: str
     note: str
- 
- 
-class IncidentDetail(IncidentOut):
+
+
+class IncidentDetail(Incident):
     description: str
+    impact_to_coo_services: str
+    customer_client_impact: str
     incident_commander: str
     bridge_url: str | None = None
+    ai_summary: str
     updates: list[TimelineEntry]
- 
- 
+
+
 class IncidentListResponse(BaseModel):
-    items: list[IncidentOut]
+    items: list[Incident]
     total: int
     page: int
     page_size: int
- 
- 
+
+
 class SummaryResponse(BaseModel):
-    critical_count: int
-    high_count: int
-    active_bridges: int
-    avg_resolution_minutes: int
- 
- 
+    p1_p2_wft: int
+    coo_caused: int
+    coo_impacted: int
+    tcoo_caused: int
+
+
 # ---------------------------------------------------------------------------
-# Mock data — replace with a real repository/database call later.
-# Opened timestamps are generated relative to import time so that
-# `duration_minutes` (computed on the fly) stays realistic across requests.
+# Mock data — mirrors IncidentDashboard.tsx's built-in dataset exactly, so
+# the two stay visually identical whether you run them standalone or
+# paired together. Replace with a real repository call later.
 # ---------------------------------------------------------------------------
- 
+
 _NOW = datetime.utcnow()
- 
- 
-def _ago(**kwargs) -> datetime:
-    return _NOW - timedelta(**kwargs)
- 
- 
+
+
+def _ago(minutes: int) -> datetime:
+    return _NOW - timedelta(minutes=minutes)
+
+
 _RAW: list[dict] = [
+    # --- Major incidents — COO Caused ---
     dict(
         incident_number="INC-98214",
         priority=Priority.P1,
-        mim=True,
-        opened_at=_ago(hours=2, minutes=45),
+        category=Category.COO_CAUSED,
         status=IncidentStatus.BRIDGE_ACTIVE,
-        causal_cio="Core Banking Systems",
-        impacted_biz="Retail Operations",
-    ),
-    dict(
-        incident_number="INC-98210",
-        priority=Priority.P2,
-        mim=False,
-        opened_at=_ago(hours=4, minutes=30),
-        status=IncidentStatus.PENDING_VENDOR,
-        causal_cio="Network Infrastructure",
-        impacted_biz="Corporate Trust",
-    ),
-    dict(
-        incident_number="INC-98199",
-        priority=Priority.P3,
-        mim=False,
-        opened_at=_ago(hours=20, minutes=40),
-        status=IncidentStatus.INVESTIGATING,
-        causal_cio="Data Warehouse",
-        impacted_biz="Wealth Management",
+        opened_at=_ago(166),
+        root_cause="Core Banking DB failover",
+        customer_impact="Retail digital banking degraded",
     ),
     dict(
         incident_number="INC-98185",
         priority=Priority.P2,
-        mim=True,
-        opened_at=_ago(hours=26),
+        category=Category.COO_CAUSED,
         status=IncidentStatus.BRIDGE_ACTIVE,
-        causal_cio="Payment Gateway",
-        impacted_biz="Commercial Banking",
-    ),
-    dict(
-        incident_number="INC-98171",
-        priority=Priority.P1,
-        mim=True,
-        opened_at=_ago(hours=1, minutes=10),
-        status=IncidentStatus.BRIDGE_ACTIVE,
-        causal_cio="Core Banking Systems",
-        impacted_biz="Retail Operations",
+        opened_at=_ago(340),
+        root_cause="Payment gateway cert expiry",
+        customer_impact="Commercial banking payments delayed",
     ),
     dict(
         incident_number="INC-98166",
         priority=Priority.P2,
-        mim=False,
-        opened_at=_ago(hours=6, minutes=5),
+        category=Category.COO_CAUSED,
         status=IncidentStatus.INVESTIGATING,
-        causal_cio="Identity & Access Mgmt",
-        impacted_biz="Corporate Trust",
-    ),
-    dict(
-        incident_number="INC-98160",
-        priority=Priority.P3,
-        mim=False,
-        opened_at=_ago(hours=9, minutes=20),
-        status=IncidentStatus.INVESTIGATING,
-        causal_cio="Card Processing",
-        impacted_biz="Retail Operations",
-    ),
-    dict(
-        incident_number="INC-98152",
-        priority=Priority.P3,
-        mim=False,
-        opened_at=_ago(days=1, hours=2),
-        status=IncidentStatus.INVESTIGATING,
-        causal_cio="Reporting Services",
-        impacted_biz="Wealth Management",
+        opened_at=_ago(365),
+        root_cause="IAM token service latency",
+        customer_impact="Internal only — no client impact",
     ),
     dict(
         incident_number="INC-98147",
         priority=Priority.P2,
-        mim=False,
-        opened_at=_ago(hours=11, minutes=15),
+        category=Category.COO_CAUSED,
         status=IncidentStatus.PENDING_VENDOR,
-        causal_cio="Network Infrastructure",
-        impacted_biz="Corporate Trust",
+        opened_at=_ago(675),
+        root_cause="Network circuit — 3rd party carrier",
+        customer_impact="Wealth mgmt reporting delayed",
+    ),
+    # --- Major incidents — COO Impacted ---
+    dict(
+        incident_number="INC-98201",
+        priority=Priority.P1,
+        category=Category.COO_IMPACTED,
+        status=IncidentStatus.BRIDGE_ACTIVE,
+        opened_at=_ago(210),
+        root_cause="Data Warehouse ETL job failure",
+        customer_impact="COO reporting dashboards stale",
     ),
     dict(
-        incident_number="INC-98139",
-        priority=Priority.P3,
-        mim=False,
-        opened_at=_ago(days=1, hours=6),
+        incident_number="INC-98194",
+        priority=Priority.P2,
+        category=Category.COO_IMPACTED,
         status=IncidentStatus.INVESTIGATING,
-        causal_cio="Data Warehouse",
-        impacted_biz="Commercial Banking",
+        opened_at=_ago(290),
+        root_cause="Shared API gateway rate-limiting",
+        customer_impact="Trade settlement confirmations delayed",
     ),
     dict(
-        incident_number="INC-98133",
-        priority=Priority.P3,
-        mim=False,
-        opened_at=_ago(days=1, hours=9),
+        incident_number="INC-98180",
+        priority=Priority.P1,
+        category=Category.COO_IMPACTED,
+        status=IncidentStatus.BRIDGE_ACTIVE,
+        opened_at=_ago(95),
+        root_cause="Enterprise DNS resolution failure",
+        customer_impact="Multiple COO-owned apps intermittently unreachable",
+    ),
+    dict(
+        incident_number="INC-98172",
+        priority=Priority.P2,
+        category=Category.COO_IMPACTED,
+        status=IncidentStatus.PENDING_VENDOR,
+        opened_at=_ago(510),
+        root_cause="Cloud region networking outage (3rd-party)",
+        customer_impact="COO batch processing delayed",
+    ),
+    dict(
+        incident_number="INC-98159",
+        priority=Priority.P2,
+        category=Category.COO_IMPACTED,
         status=IncidentStatus.INVESTIGATING,
-        causal_cio="Batch Processing",
-        impacted_biz="Retail Operations",
+        opened_at=_ago(605),
+        root_cause="Identity provider session expiry bug",
+        customer_impact="Internal only — no client impact",
+    ),
+    dict(
+        incident_number="INC-98142",
+        priority=Priority.P1,
+        category=Category.COO_IMPACTED,
+        status=IncidentStatus.BRIDGE_ACTIVE,
+        opened_at=_ago(58),
+        root_cause="Mainframe batch scheduler stall",
+        customer_impact="End-of-day COO reconciliation delayed",
+    ),
+    # --- P3 & P4 — TCOO Caused ---
+    dict(
+        incident_number="INC-98135",
+        priority=Priority.P3,
+        category=Category.TCOO_CAUSED,
+        status=IncidentStatus.INVESTIGATING,
+        opened_at=_ago(720),
+        root_cause="Internal reporting service memory leak",
+        customer_impact="Internal only — no client impact",
     ),
     dict(
         incident_number="INC-98128",
-        priority=Priority.P3,
-        mim=False,
-        opened_at=_ago(hours=14, minutes=50),
+        priority=Priority.P4,
+        category=Category.TCOO_CAUSED,
         status=IncidentStatus.INVESTIGATING,
-        causal_cio="Payment Gateway",
-        impacted_biz="Commercial Banking",
+        opened_at=_ago(890),
+        root_cause="Batch job retry storm",
+        customer_impact="Internal only — no client impact",
     ),
     dict(
         incident_number="INC-98120",
         priority=Priority.P3,
-        mim=False,
-        opened_at=_ago(days=1, hours=12),
-        status=IncidentStatus.INVESTIGATING,
-        causal_cio="Reporting Services",
-        impacted_biz="Wealth Management",
-    ),
-    dict(
-        incident_number="INC-98115",
-        priority=Priority.P3,
-        mim=False,
-        opened_at=_ago(days=2, hours=1),
-        status=IncidentStatus.INVESTIGATING,
-        causal_cio="Identity & Access Mgmt",
-        impacted_biz="Corporate Trust",
-    ),
-    dict(
-        incident_number="INC-98109",
-        priority=Priority.P3,
-        mim=False,
-        opened_at=_ago(hours=18, minutes=30),
-        status=IncidentStatus.INVESTIGATING,
-        causal_cio="Card Processing",
-        impacted_biz="Retail Operations",
-    ),
-    dict(
-        incident_number="INC-98101",
-        priority=Priority.P3,
-        mim=False,
-        opened_at=_ago(days=2, hours=4),
-        status=IncidentStatus.INVESTIGATING,
-        causal_cio="Data Warehouse",
-        impacted_biz="Wealth Management",
-    ),
-    dict(
-        incident_number="INC-98094",
-        priority=Priority.P3,
-        mim=False,
-        opened_at=_ago(days=2, hours=8),
-        status=IncidentStatus.INVESTIGATING,
-        causal_cio="Batch Processing",
-        impacted_biz="Commercial Banking",
-    ),
-    dict(
-        incident_number="INC-98088",
-        priority=Priority.P2,
-        mim=False,
-        opened_at=_ago(hours=22, minutes=10),
+        category=Category.TCOO_CAUSED,
         status=IncidentStatus.PENDING_VENDOR,
-        causal_cio="Network Infrastructure",
-        impacted_biz="Corporate Trust",
+        opened_at=_ago(745),
+        root_cause="Vendor SFTP connectivity",
+        customer_impact="Delayed nightly file delivery",
     ),
     dict(
-        incident_number="INC-98079",
+        incident_number="INC-98113",
         priority=Priority.P3,
-        mim=False,
-        opened_at=_ago(days=2, hours=15),
+        category=Category.TCOO_CAUSED,
         status=IncidentStatus.INVESTIGATING,
-        causal_cio="Reporting Services",
-        impacted_biz="Retail Operations",
+        opened_at=_ago(1040),
+        root_cause="Log aggregation pipeline backlog",
+        customer_impact="Internal only — no client impact",
+    ),
+    dict(
+        incident_number="INC-98107",
+        priority=Priority.P4,
+        category=Category.TCOO_CAUSED,
+        status=IncidentStatus.INVESTIGATING,
+        opened_at=_ago(1200),
+        root_cause="Dev/test environment outage",
+        customer_impact="Internal only — no client impact",
+    ),
+    dict(
+        incident_number="INC-98099",
+        priority=Priority.P3,
+        category=Category.TCOO_CAUSED,
+        status=IncidentStatus.INVESTIGATING,
+        opened_at=_ago(1330),
+        root_cause="Card processing batch reconciliation mismatch",
+        customer_impact="Internal only — no client impact",
+    ),
+    dict(
+        incident_number="INC-98092",
+        priority=Priority.P4,
+        category=Category.TCOO_CAUSED,
+        status=IncidentStatus.PENDING_VENDOR,
+        opened_at=_ago(1455),
+        root_cause="3rd-party monitoring tool false alerts",
+        customer_impact="Internal only — no client impact",
+    ),
+    dict(
+        incident_number="INC-98085",
+        priority=Priority.P3,
+        category=Category.TCOO_CAUSED,
+        status=IncidentStatus.INVESTIGATING,
+        opened_at=_ago(1600),
+        root_cause="Reporting Services query timeout",
+        customer_impact="Wealth mgmt report generation slow",
+    ),
+    dict(
+        incident_number="INC-98077",
+        priority=Priority.P3,
+        category=Category.TCOO_CAUSED,
+        status=IncidentStatus.INVESTIGATING,
+        opened_at=_ago(1740),
+        root_cause="Legacy batch scheduler misconfiguration",
+        customer_impact="Internal only — no client impact",
     ),
     dict(
         incident_number="INC-98070",
-        priority=Priority.P3,
-        mim=False,
-        opened_at=_ago(days=3),
+        priority=Priority.P4,
+        category=Category.TCOO_CAUSED,
         status=IncidentStatus.INVESTIGATING,
-        causal_cio="Identity & Access Mgmt",
-        impacted_biz="Wealth Management",
+        opened_at=_ago(1890),
+        root_cause="Data Warehouse index rebuild backlog",
+        customer_impact="Internal only — no client impact",
+    ),
+    # --- General WFT incidents (not COO/TCOO-tagged; still count toward tile 1) ---
+    dict(
+        incident_number="INC-98063",
+        priority=Priority.P1,
+        category=Category.WFT_WIDE,
+        status=IncidentStatus.BRIDGE_ACTIVE,
+        opened_at=_ago(40),
+        root_cause="Retail mobile app crash on login",
+        customer_impact="Retail mobile banking unavailable",
     ),
     dict(
-        incident_number="INC-98062",
-        priority=Priority.P3,
-        mim=False,
-        opened_at=_ago(days=3, hours=4),
+        incident_number="INC-98056",
+        priority=Priority.P2,
+        category=Category.WFT_WIDE,
         status=IncidentStatus.INVESTIGATING,
-        causal_cio="Data Warehouse",
-        impacted_biz="Corporate Trust",
-    ),
-    dict(
-        incident_number="INC-98055",
-        priority=Priority.P3,
-        mim=False,
-        opened_at=_ago(days=3, hours=9),
-        status=IncidentStatus.INVESTIGATING,
-        causal_cio="Batch Processing",
-        impacted_biz="Commercial Banking",
+        opened_at=_ago(455),
+        root_cause="Card tokenization service errors",
+        customer_impact="Some card-not-present transactions failing",
     ),
     dict(
         incident_number="INC-98048",
         priority=Priority.P3,
-        mim=False,
-        opened_at=_ago(days=3, hours=14),
+        category=Category.WFT_WIDE,
         status=IncidentStatus.INVESTIGATING,
-        causal_cio="Card Processing",
-        impacted_biz="Retail Operations",
+        opened_at=_ago(2020),
+        root_cause="Internal wiki search indexing failure",
+        customer_impact="Internal only — no client impact",
     ),
     dict(
         incident_number="INC-98041",
-        priority=Priority.P3,
-        mim=False,
-        opened_at=_ago(days=4),
+        priority=Priority.P4,
+        category=Category.WFT_WIDE,
         status=IncidentStatus.INVESTIGATING,
-        causal_cio="Reporting Services",
-        impacted_biz="Wealth Management",
+        opened_at=_ago(2160),
+        root_cause="Non-prod CI pipeline flakiness",
+        customer_impact="Internal only — no client impact",
     ),
 ]
- 
+
 INCIDENTS: list[Incident] = [Incident(**row) for row in _RAW]
- 
-# Average resolution time for recently *closed* incidents. Hardcoded here to
-# match the original design (4h 12m); swap for a real aggregate query later.
-AVG_RESOLUTION_MINUTES = 4 * 60 + 12
- 
- 
+
+# Hand-authored detail copy for the one incident shown in the reference
+# detail mockup, so opening it matches exactly. Every other incident's
+# detail is composed deterministically by build_incident_detail() below.
+_DETAIL_OVERRIDES: dict[str, dict] = {
+    "INC-98214": dict(
+        description=(
+            "Core Banking database failover triggered a 12-minute write-lock "
+            "during peak retail traffic."
+        ),
+        impact_to_coo_services="Retail digital banking, mobile deposit",
+        customer_client_impact="~410K retail customers experienced degraded login & balance refresh",
+        incident_commander="Priya Natarajan",
+        ai_summary=(
+            "A failover event on the Core Banking primary database at 11:18 AM triggered a write-lock "
+            "that blocked retail login and balance-refresh transactions. Engineering rolled back to the "
+            "standby replica at 11:41 AM; residual latency is being monitored. No data loss detected. "
+            "Estimated full recovery within 30 minutes pending vendor confirmation on replica sync health."
+        ),
+    ),
+}
+
 _COMMANDERS = [
     "Morgan Reyes",
     "Priya Natarajan",
@@ -378,143 +392,149 @@ _COMMANDERS = [
     "Sofia Marchetti",
     "Derek Owusu",
 ]
- 
- 
+
+
 def _pick_commander(incident_number: str) -> str:
-    # Deterministic "random" pick so the same incident always gets the same
-    # commander across requests, without needing to persist anything.
     index = sum(ord(c) for c in incident_number) % len(_COMMANDERS)
     return _COMMANDERS[index]
- 
- 
-def build_incident_detail(incident: Incident) -> IncidentDetail:
-    """Derive a richer detail payload from a base Incident.
- 
-    Nothing here is persisted — description/commander/timeline are computed
-    on the fly from the incident's existing fields. Replace with real
-    incident-notes / audit-log data once there's a database behind this.
-    """
-    now = datetime.utcnow()
-    commander = _pick_commander(incident.incident_number)
- 
-    if incident.mim:
-        engagement = (
-            "A major incident bridge is active and stakeholders are being "
-            "updated every 30 minutes."
-        )
-        bridge_url = f"https://bridge.enterprise-incident.internal/{incident.incident_number.lower()}"
+
+
+def _compose_ai_summary(incident: Incident, commander: str) -> str:
+    if incident.status == IncidentStatus.BRIDGE_ACTIVE:
+        engagement = "A major incident bridge is active and stakeholders are being updated every 30 minutes."
+    elif incident.status == IncidentStatus.PENDING_VENDOR:
+        engagement = f"{commander} is awaiting vendor confirmation before the next remediation step."
     else:
-        engagement = "The service owner team is investigating and will escalate if a bridge is needed."
-        bridge_url = None
- 
-    description = f"{incident.causal_cio} is degraded, impacting {incident.impacted_biz}. {engagement}"
- 
+        engagement = f"{commander} and the service owner team are investigating root cause and containment options."
+
+    category_label = "WFT services" if incident.category == Category.WFT_WIDE else incident.category.value
+    return (
+        f"{incident.root_cause} was identified affecting {category_label}. {engagement} "
+        f"Customer impact: {incident.customer_impact.lower()}."
+    )
+
+
+def _build_timeline(incident: Incident, commander: str) -> list[TimelineEntry]:
+    now = datetime.utcnow()
     elapsed = now - incident.opened_at
     midpoint = incident.opened_at + elapsed / 2
     recent = now - timedelta(minutes=5) if elapsed > timedelta(minutes=10) else now
- 
-    updates = [
+
+    return [
         TimelineEntry(
             timestamp=incident.opened_at,
             author="Monitoring System",
             note=(
                 f"{incident.incident_number} declared {incident.priority.value} "
-                f"— root cause traced to {incident.causal_cio}."
+                f"— root cause traced to {incident.root_cause}."
             ),
         ),
         TimelineEntry(
             timestamp=midpoint,
             author=commander,
-            note=f'Engaged {incident.impacted_biz} stakeholders. Status set to "{incident.status.value}".',
+            note=f'Engaged stakeholders. Status set to "{incident.status.value}".',
         ),
         TimelineEntry(
             timestamp=recent,
             author=commander,
             note=(
                 "Bridge remains active; next update in 30 minutes."
-                if incident.mim
+                if incident.status == IncidentStatus.BRIDGE_ACTIVE
                 else f"Still {incident.status.value.lower()} — no ETA yet."
             ),
         ),
     ]
- 
-    return IncidentDetail(
-        **IncidentOut.from_incident(incident).model_dump(),
-        description=description,
+
+
+def build_incident_detail(incident: Incident) -> IncidentDetail:
+    commander = _pick_commander(incident.incident_number)
+    bridge_url = (
+        f"https://bridge.enterprise-incident.internal/{incident.incident_number.lower()}"
+        if incident.status == IncidentStatus.BRIDGE_ACTIVE
+        else None
+    )
+
+    base = dict(
+        **incident.model_dump(),
+        description=incident.root_cause,
+        impact_to_coo_services=incident.customer_impact,
+        customer_client_impact=incident.customer_impact,
         incident_commander=commander,
         bridge_url=bridge_url,
-        updates=updates,
+        ai_summary=_compose_ai_summary(incident, commander),
+        updates=_build_timeline(incident, commander),
     )
- 
- 
+    base.update(_DETAIL_OVERRIDES.get(incident.incident_number, {}))
+    return IncidentDetail(**base)
+
+
 # ---------------------------------------------------------------------------
 # Router — mount this into your existing FastAPI app (see module docstring).
 # ---------------------------------------------------------------------------
- 
-router = APIRouter(prefix="/api", tags=["incidents"])
- 
- 
+
+router = APIRouter(prefix="/api", tags=["incident-dashboard"])
+
+
 @router.get("/health")
 def health() -> dict:
     return {"status": "ok"}
- 
- 
+
+
 @router.get("/incidents/summary", response_model=SummaryResponse)
 def get_summary() -> SummaryResponse:
-    critical_count = sum(1 for i in INCIDENTS if i.priority == Priority.P1)
-    high_count = sum(1 for i in INCIDENTS if i.priority == Priority.P2)
-    active_bridges = sum(1 for i in INCIDENTS if i.status == IncidentStatus.BRIDGE_ACTIVE)
     return SummaryResponse(
-        critical_count=critical_count,
-        high_count=high_count,
-        active_bridges=active_bridges,
-        avg_resolution_minutes=AVG_RESOLUTION_MINUTES,
+        p1_p2_wft=sum(1 for i in INCIDENTS if i.priority in (Priority.P1, Priority.P2)),
+        coo_caused=sum(1 for i in INCIDENTS if i.category == Category.COO_CAUSED),
+        coo_impacted=sum(1 for i in INCIDENTS if i.category == Category.COO_IMPACTED),
+        tcoo_caused=sum(1 for i in INCIDENTS if i.category == Category.TCOO_CAUSED),
     )
- 
- 
+
+
 @router.get("/incidents", response_model=IncidentListResponse)
 def list_incidents(
-    priority: Priority | None = Query(default=None),
-    status: IncidentStatus | None = Query(default=None),
+    tile: TileFilter | None = Query(default=None),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=4, ge=1, le=100),
+    page_size: int = Query(default=6, ge=1, le=100),
 ) -> IncidentListResponse:
-    filtered = INCIDENTS
-    if priority is not None:
-        filtered = [i for i in filtered if i.priority == priority]
-    if status is not None:
-        filtered = [i for i in filtered if i.status == status]
- 
-    # Most recently opened first, matching the original design's ordering.
+    if tile == TileFilter.P1_P2_WFT:
+        filtered = [i for i in INCIDENTS if i.priority in (Priority.P1, Priority.P2)]
+    elif tile == TileFilter.COO_CAUSED:
+        filtered = [i for i in INCIDENTS if i.category == Category.COO_CAUSED]
+    elif tile == TileFilter.COO_IMPACTED:
+        filtered = [i for i in INCIDENTS if i.category == Category.COO_IMPACTED]
+    elif tile == TileFilter.TCOO_CAUSED:
+        filtered = [i for i in INCIDENTS if i.category == Category.TCOO_CAUSED]
+    else:
+        filtered = list(INCIDENTS)
+
     filtered = sorted(filtered, key=lambda i: i.opened_at, reverse=True)
- 
+
     total = len(filtered)
     start = (page - 1) * page_size
     end = start + page_size
-    page_items = [IncidentOut.from_incident(i) for i in filtered[start:end]]
- 
-    return IncidentListResponse(items=page_items, total=total, page=page, page_size=page_size)
- 
- 
+
+    return IncidentListResponse(items=filtered[start:end], total=total, page=page, page_size=page_size)
+
+
 @router.get("/incidents/{incident_number}", response_model=IncidentDetail)
 def get_incident_detail(incident_number: str) -> IncidentDetail:
     incident = next((i for i in INCIDENTS if i.incident_number == incident_number), None)
     if incident is None:
         raise HTTPException(status_code=404, detail=f"Incident {incident_number!r} not found")
     return build_incident_detail(incident)
- 
- 
+
+
 # ---------------------------------------------------------------------------
 # Standalone dev runner. Not used once this router is mounted into your
 # real app — this only exists so the file can be smoke-tested on its own.
 # ---------------------------------------------------------------------------
- 
+
 if __name__ == "__main__":
     import uvicorn
     from fastapi import FastAPI
     from fastapi.middleware.cors import CORSMiddleware
- 
-    dev_app = FastAPI(title="Incident Console API (standalone dev)")
+
+    dev_app = FastAPI(title="Incident Dashboard API (standalone dev)")
     dev_app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -522,7 +542,6 @@ if __name__ == "__main__":
         allow_headers=["*"],
     )
     dev_app.include_router(router)
- 
+
     print("Standalone dev server: http://localhost:8000/api/health")
     uvicorn.run(dev_app, host="0.0.0.0", port=8000)
- 
