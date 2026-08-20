@@ -33,6 +33,31 @@
  * No external CSS, font, or icon-font dependency — plain inline styles,
  * same Institutional Heritage palette as the rest of this project.
  * Requires only `react` and `react-dom` (createPortal).
+ *
+ * QUICK EDIT GUIDE — "I want to change X, where do I look?"
+ * ------------------------------------------------------------------
+ *   Change a color (red, gold, etc.)          -> the `theme` object below
+ *   Change fonts                              -> `fontHeadline` / `fontBody` below
+ *   Change a tile's title text                -> `TILE_LABELS` (near the bottom)
+ *   Change a Priority badge's color           -> `PRIORITY_STYLES`
+ *   Change a Status dot's color               -> `STATUS_DOT_COLOR`
+ *   Add/remove a table column                 -> you need to touch 3 places:
+ *                                                  1. add a <SortableHeader> in
+ *                                                     IncidentsTable's <thead>
+ *                                                  2. add a matching <td> in IncidentRow
+ *                                                  3. (if it should be sortable) add the
+ *                                                     field to SortField above AND to
+ *                                                     _SORTABLE_FIELDS in the backend
+ *   Add a new dropdown filter option           -> add an <option> in the Priority/Status
+ *                                                  <select> near the bottom, matching the
+ *                                                  Python enum's exact text in the backend
+ *   Change how many rows show per page         -> `PAGE_SIZE` constant (near the bottom)
+ *   Change the header title/subtitle text      -> the <h2>/<p> inside the root component,
+ *                                                  near the top of the returned JSX
+ *   Change what's shown in the detail modal    -> `IncidentDetailModal` (the `<Fact>` rows
+ *                                                  and the AI-summary/timeline sections)
+ *   This file only fetches/displays data — to change WHAT data shows up
+ *   (add an incident, change wording, etc.) edit incident_dashboard_router.py instead.
  */
 
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
@@ -40,6 +65,9 @@ import { createPortal } from "react-dom";
 
 // ---------------------------------------------------------------------------
 // Theme — Institutional Heritage palette, ported 1:1 from the design tokens.
+// EVERY color used anywhere in this file comes from this one object — to
+// re-theme the whole dashboard, change the hex values here rather than
+// hunting through the JSX below.
 // ---------------------------------------------------------------------------
 
 const theme = {
@@ -73,12 +101,21 @@ const fontBody = '"Work Sans", "Segoe UI", Arial, sans-serif';
 
 // ---------------------------------------------------------------------------
 // Types (mirrors incident_dashboard_router.py's Pydantic models 1:1)
+//
+// IMPORTANT: these types and the Python models in incident_dashboard_router.py
+// must stay in sync. If you rename a field or add a new Priority/Status/
+// Category value on the backend, make the matching change here too (and
+// vice versa) — field names and enum string values are compared as plain
+// text between frontend and backend, so a mismatch just silently shows
+// nothing instead of throwing an error you'd notice.
 // ---------------------------------------------------------------------------
 
 export type Priority = "P1" | "P2" | "P3" | "P4";
 export type IncidentStatus = "Bridge Active" | "Pending Vendor" | "Investigating";
 export type Category = "COO Caused" | "COO Impacted" | "TCOO Caused" | "WFT-Wide";
 export type TileFilter = "P1_P2_WFT" | "COO_CAUSED" | "COO_IMPACTED" | "TCOO_CAUSED" | null;
+export type SortField = "incident_number" | "priority" | "category" | "status" | "root_cause" | "customer_impact";
+export type SortDir = "asc" | "desc";
 
 export interface Incident {
   incident_number: string;
@@ -121,7 +158,10 @@ export interface SummaryResponse {
 }
 
 // ---------------------------------------------------------------------------
-// API client
+// API client — everything below talks to incident_dashboard_router.py.
+// You shouldn't need to edit this section unless you're adding a brand-new
+// endpoint or query parameter; for wording/data changes, edit the backend
+// file instead.
 // ---------------------------------------------------------------------------
 
 class ApiError extends Error {
@@ -152,21 +192,42 @@ async function apiGet<T>(
   return (await res.json()) as T;
 }
 
+// Fetches one page of the incidents table. Called whenever a tile, filter,
+// search box, sort header, or page button changes — see the root component's
+// useEffect near the bottom. Every param here becomes a "?x=..." on the
+// request; the backend's list_incidents() function is what actually reads them.
 function listIncidents(
   apiBaseUrl: string,
-  params: { tile?: TileFilter; page: number; pageSize: number }
+  params: {
+    tile?: TileFilter;
+    priority?: Priority | "";
+    status?: IncidentStatus | "";
+    q?: string;
+    sortBy?: SortField | null;
+    sortDir?: SortDir;
+    page: number;
+    pageSize: number;
+  }
 ): Promise<IncidentListResponse> {
   return apiGet<IncidentListResponse>(apiBaseUrl, "/api/incidents", {
     tile: params.tile ?? undefined,
+    priority: params.priority || undefined,
+    status: params.status || undefined,
+    q: params.q || undefined,
+    sort_by: params.sortBy ?? undefined,
+    sort_dir: params.sortBy ? params.sortDir : undefined,
     page: params.page.toString(),
     page_size: params.pageSize.toString(),
   });
 }
 
+// Fetches the 4 numbers shown on the KPI tiles.
 function getSummary(apiBaseUrl: string): Promise<SummaryResponse> {
   return apiGet<SummaryResponse>(apiBaseUrl, "/api/incidents/summary");
 }
 
+// Fetches the full detail for one incident, used to populate the modal
+// when a row is clicked.
 function getIncidentDetail(apiBaseUrl: string, incidentNumber: string): Promise<IncidentDetail> {
   return apiGet<IncidentDetail>(apiBaseUrl, `/api/incidents/${encodeURIComponent(incidentNumber)}`);
 }
@@ -201,6 +262,11 @@ function formatTimelineTimestamp(isoString: string): string {
 
 // ---------------------------------------------------------------------------
 // Inline SVG icons (no icon-font dependency)
+//
+// These are all plain decorative line-icons — purely visual, no data or
+// logic in them. Safe to swap out or delete any of these if you'd rather
+// use an icon library (e.g. lucide-react) instead; just keep the same
+// component name and a `size` prop so the call sites below don't need to change.
 // ---------------------------------------------------------------------------
 
 function IconBase({ children, size = 20 }: { children: ReactNode; size?: number }) {
@@ -233,6 +299,27 @@ const IconChevronRight = (p: { size?: number }) => (
   </IconBase>
 );
 
+const IconSearch = (p: { size?: number }) => (
+  <IconBase size={p.size}>
+    <circle cx="11" cy="11" r="8" />
+    <path d="m21 21-4.35-4.35" />
+  </IconBase>
+);
+
+const IconArrowUp = (p: { size?: number }) => (
+  <IconBase size={p.size}>
+    <path d="M12 19V5" />
+    <path d="m5 12 7-7 7 7" />
+  </IconBase>
+);
+
+const IconArrowDown = (p: { size?: number }) => (
+  <IconBase size={p.size}>
+    <path d="M12 5v14" />
+    <path d="m19 12-7 7-7-7" />
+  </IconBase>
+);
+
 const IconClose = (p: { size?: number }) => (
   <IconBase size={p.size}>
     <path d="M18 6 6 18" />
@@ -250,6 +337,10 @@ const IconCall = (p: { size?: number }) => (
 // Badges
 // ---------------------------------------------------------------------------
 
+// The colored pill shown next to each Priority (P1/P2/P3/P4) in the table
+// and modal. To add a new priority (e.g. "P5"), add a matching entry here
+// AND add "P5" to the Priority type above AND to the Priority enum in
+// incident_dashboard_router.py.
 const PRIORITY_STYLES: Record<Priority, { bg: string; fg: string }> = {
   P1: { bg: theme.errorContainer, fg: theme.onErrorContainer },
   P2: { bg: theme.secondaryContainer, fg: theme.onSecondaryContainer },
@@ -278,6 +369,10 @@ function PriorityBadge({ priority }: { priority: Priority }) {
   );
 }
 
+// The color of the small status dot shown next to each incident's status
+// text. To add a new status (e.g. "Resolved"), add a matching entry here
+// AND to the IncidentStatus type above AND to the IncidentStatus enum in
+// incident_dashboard_router.py.
 const STATUS_DOT_COLOR: Record<IncidentStatus, string> = {
   "Bridge Active": theme.error,
   "Pending Vendor": theme.secondary,
@@ -312,7 +407,11 @@ function StatusIndicator({ status }: { status: IncidentStatus }) {
 }
 
 // ---------------------------------------------------------------------------
-// KPI tile
+// KPI tile — one of the 4 clickable boxes at the top of the dashboard.
+// `selected` = this tile is the active filter (red border + "Selected" tag).
+// `restingAccent` = an optional thin top-border color shown when NOT
+// selected (used on the P1&P2 and COO Impacted tiles to hint at severity;
+// omit it for a plain tile with no accent).
 // ---------------------------------------------------------------------------
 
 function KpiTile({
@@ -420,6 +519,9 @@ const td: CSSProperties = {
   borderBottom: `1px solid ${theme.surfaceDim}`,
 };
 
+// One row of the incidents table. Add/remove a <td> here to add/remove a
+// column — and add/remove the matching <SortableHeader> in IncidentsTable
+// below (both must have the same number of columns, in the same order).
 function IncidentRow({
   incident,
   isEven,
@@ -467,6 +569,65 @@ function IncidentRow({
   );
 }
 
+// A clickable column header. Clicking it calls onSort(field); the parent
+// (IncidentsTable/root component) decides what that does — toggling between
+// ascending/descending and re-fetching from the backend already sorted.
+// `field` must be one of the SortField values, which must also exist as a
+// key in the backend's _SORTABLE_FIELDS dict, or sorting that column will fail.
+function SortableHeader({
+  label,
+  field,
+  width,
+  sortBy,
+  sortDir,
+  onSort,
+}: {
+  label: string;
+  field: SortField;
+  width?: number;
+  sortBy: SortField | null;
+  sortDir: SortDir;
+  onSort: (field: SortField) => void;
+}) {
+  const active = sortBy === field;
+  return (
+    <th style={{ ...th, width }}>
+      <button
+        type="button"
+        onClick={() => onSort(field)}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 4,
+          background: "none",
+          border: "none",
+          padding: 0,
+          margin: 0,
+          font: "inherit",
+          color: active ? theme.primary : "inherit",
+          cursor: "pointer",
+        }}
+        aria-label={`Sort by ${label} ${active && sortDir === "asc" ? "descending" : "ascending"}`}
+      >
+        {label}
+        {active ? (
+          sortDir === "asc" ? (
+            <IconArrowUp size={12} />
+          ) : (
+            <IconArrowDown size={12} />
+          )
+        ) : (
+          <span style={{ width: 12, height: 12, display: "inline-block" }} />
+        )}
+      </button>
+    </th>
+  );
+}
+
+// The table itself: header row (6 sortable columns), body rows (loading /
+// error / empty-state / actual rows), and the pagination footer. This
+// component doesn't fetch data or hold filter state itself — it just
+// displays whatever the root component (at the bottom of this file) hands it.
 function IncidentsTable({
   incidents,
   loading,
@@ -474,6 +635,9 @@ function IncidentsTable({
   total,
   page,
   pageSize,
+  sortBy,
+  sortDir,
+  onSort,
   onPageChange,
   onRowOpen,
 }: {
@@ -483,6 +647,9 @@ function IncidentsTable({
   total: number;
   page: number;
   pageSize: number;
+  sortBy: SortField | null;
+  sortDir: SortDir;
+  onSort: (field: SortField) => void;
   onPageChange: (page: number) => void;
   onRowOpen: (incidentNumber: string) => void;
 }) {
@@ -504,12 +671,12 @@ function IncidentsTable({
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: theme.surfaceContainerLow, borderBottom: `1px solid ${theme.outlineVariant}` }}>
-              <th style={{ ...th, width: 112 }}>Incident #</th>
-              <th style={{ ...th, width: 90 }}>Priority</th>
-              <th style={{ ...th, width: 130 }}>Category</th>
-              <th style={{ ...th, width: 150 }}>Status</th>
-              <th style={th}>Root Cause</th>
-              <th style={th}>Customer Impact</th>
+              <SortableHeader label="Incident #" field="incident_number" width={112} sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
+              <SortableHeader label="Priority" field="priority" width={90} sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
+              <SortableHeader label="Category" field="category" width={130} sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
+              <SortableHeader label="Status" field="status" width={150} sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
+              <SortableHeader label="Root Cause" field="root_cause" sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
+              <SortableHeader label="Customer Impact" field="customer_impact" sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
               <th style={{ ...th, width: 40 }} />
             </tr>
           </thead>
@@ -604,10 +771,21 @@ function IncidentsTable({
 
 // ---------------------------------------------------------------------------
 // Incident detail modal (80vw x 80vh, centered, animated in/out)
+//
+// Opens when a table row is clicked. Fetches the full IncidentDetail for
+// just that one incident (getIncidentDetail, above) and renders it in two
+// columns: key facts + Join Bridge button on the left, AI summary + timeline
+// on the right. To change what's shown, edit the <Fact> rows and the
+// AI-summary/Timeline blocks further down in this component — to change the
+// underlying TEXT those show, edit incident_dashboard_router.py instead
+// (_compose_ai_summary, _build_timeline, _DETAIL_OVERRIDES).
 // ---------------------------------------------------------------------------
 
 const ANIMATION_MS = 200;
 
+// One label+value pair in the modal's left column (e.g. "Root Cause" ->
+// the actual root cause text). Set accent=true to show the value in red/bold
+// (used for Customer/Client Impact to make it stand out).
 function Fact({ label, value, accent = false }: { label: string; value: string; accent?: boolean }) {
   return (
     <div>
@@ -913,11 +1091,18 @@ function IncidentDetailModal({
 }
 
 // ---------------------------------------------------------------------------
-// Root component
+// Root component — this is what you actually render: <IncidentDashboard />
 // ---------------------------------------------------------------------------
 
+// Rows shown per page. Raise this if you want fewer page-turns / more rows
+// visible at once (the backend's page_size default doesn't matter — this
+// value is always sent explicitly).
 const PAGE_SIZE = 6;
 
+// The exact title text shown on each KPI tile and on the "Showing: ..."
+// filter chip. Edit the strings on the right to change what's displayed —
+// this is purely display text and doesn't need to match anything in the
+// backend.
 const TILE_LABELS: Record<Exclude<TileFilter, null>, string> = {
   P1_P2_WFT: "P1 & P2 — WFT-Wide",
   COO_CAUSED: "Major Incidents — COO Caused",
@@ -931,28 +1116,57 @@ export interface IncidentDashboardProps {
 }
 
 export default function IncidentDashboard({ apiBaseUrl = "" }: IncidentDashboardProps) {
-  const [tileFilter, setTileFilter] = useState<TileFilter>(null);
-  const [page, setPage] = useState(1);
-  const [selectedIncidentNumber, setSelectedIncidentNumber] = useState<string | null>(null);
+  // --- What the user has selected (all the ways the table can be filtered/sorted) ---
+  const [tileFilter, setTileFilter] = useState<TileFilter>(null); // which KPI tile is clicked, if any
+  const [priorityFilter, setPriorityFilter] = useState<Priority | "">(""); // Priority dropdown
+  const [statusFilter, setStatusFilter] = useState<IncidentStatus | "">(""); // Status dropdown
+  const [searchInput, setSearchInput] = useState(""); // what's typed in the search box right now (every keystroke)
+  const [debouncedSearch, setDebouncedSearch] = useState(""); // the search text AFTER the 300ms debounce below — this is what actually gets sent to the API
+  const [sortBy, setSortBy] = useState<SortField | null>(null); // which column header was clicked
+  const [sortDir, setSortDir] = useState<SortDir>("asc"); // asc/desc for that column
+  const [page, setPage] = useState(1); // current page number
+  const [selectedIncidentNumber, setSelectedIncidentNumber] = useState<string | null>(null); // which row's modal is open (null = modal closed)
 
-  const [incidents, setIncidents] = useState<Incident[]>([]);
-  const [total, setTotal] = useState(0);
-  const [summary, setSummary] = useState<SummaryResponse | null>(null);
+  // --- Data fetched from the backend ---
+  const [incidents, setIncidents] = useState<Incident[]>([]); // the current page of rows
+  const [total, setTotal] = useState(0); // total matching rows, across all pages (for "Showing X-Y of Z")
+  const [summary, setSummary] = useState<SummaryResponse | null>(null); // the 4 KPI tile numbers
 
+  // --- Request status ---
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Debounce the search box so we don't fire a request on every keystroke.
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setDebouncedSearch(searchInput.trim()), 300);
+    return () => window.clearTimeout(timeout);
+  }, [searchInput]);
+
+  // Whenever any filter/search/sort changes, jump back to page 1 — otherwise
+  // you could be stuck on "page 4" of a search that only has 1 page of results.
   useEffect(() => {
     setPage(1);
-  }, [tileFilter]);
+  }, [tileFilter, priorityFilter, statusFilter, debouncedSearch, sortBy, sortDir]);
 
+  // The main data fetch. Re-runs any time something in the dependency array
+  // at the bottom of this effect changes — that's what makes clicking a
+  // tile/filter/header/page-button actually update the table.
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
 
     Promise.all([
-      listIncidents(apiBaseUrl, { tile: tileFilter, page, pageSize: PAGE_SIZE }),
+      listIncidents(apiBaseUrl, {
+        tile: tileFilter,
+        priority: priorityFilter,
+        status: statusFilter,
+        q: debouncedSearch,
+        sortBy,
+        sortDir,
+        page,
+        pageSize: PAGE_SIZE,
+      }),
       getSummary(apiBaseUrl),
     ])
       .then(([listRes, summaryRes]) => {
@@ -976,11 +1190,38 @@ export default function IncidentDashboard({ apiBaseUrl = "" }: IncidentDashboard
     return () => {
       cancelled = true;
     };
-  }, [apiBaseUrl, tileFilter, page]);
+  }, [apiBaseUrl, tileFilter, priorityFilter, statusFilter, debouncedSearch, sortBy, sortDir, page]);
 
+  // Clicking a tile that's already selected clears the filter; clicking a
+  // different tile switches to it.
   function toggleTile(next: Exclude<TileFilter, null>) {
     setTileFilter((current) => (current === next ? null : next));
   }
+
+  // Clicking a column header: if it's already the active sort column, flip
+  // asc<->desc. If it's a different column, switch to it and start at asc.
+  function handleSort(field: SortField) {
+    setSortBy((current) => {
+      if (current === field) {
+        setSortDir((dir) => (dir === "asc" ? "desc" : "asc"));
+        return current;
+      }
+      setSortDir("asc");
+      return field;
+    });
+  }
+
+  const selectStyle: CSSProperties = {
+    border: `1px solid ${theme.outlineVariant}`,
+    background: theme.surface,
+    borderRadius: 4,
+    padding: "6px 12px",
+    fontFamily: fontBody,
+    fontSize: 14,
+    color: theme.onSurface,
+    outline: "none",
+    boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16, fontFamily: fontBody }}>
@@ -988,13 +1229,73 @@ export default function IncidentDashboard({ apiBaseUrl = "" }: IncidentDashboard
           animation — the one thing inline styles can't express. */}
       <style>{"@keyframes ic-pulse{0%,100%{opacity:1}50%{opacity:.35}}"}</style>
 
-      <div>
-        <h2 style={{ fontFamily: fontHeadline, fontSize: 30, fontWeight: 700, color: theme.onBackground, margin: "0 0 4px" }}>
-          COO Major Incident Dashboard
-        </h2>
-        <p style={{ fontFamily: fontBody, fontSize: 15, color: theme.onSurfaceVariant, margin: 0 }}>
-          Real-time view for SOD ops calls — click a tile to filter, click a row for full detail.
-        </p>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 16 }}>
+        <div>
+          <h2 style={{ fontFamily: fontHeadline, fontSize: 30, fontWeight: 700, color: theme.onBackground, margin: "0 0 4px" }}>
+            COO Major Incident Dashboard
+          </h2>
+          <p style={{ fontFamily: fontBody, fontSize: 15, color: theme.onSurfaceVariant, margin: 0 }}>
+            Real-time view for SOD ops calls — click a tile to filter, click a row for full detail.
+          </p>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ position: "relative" }}>
+            <span
+              style={{
+                position: "absolute",
+                left: 10,
+                top: "50%",
+                transform: "translateY(-50%)",
+                color: theme.onSurfaceVariant,
+                display: "flex",
+              }}
+            >
+              <IconSearch size={16} />
+            </span>
+            <input
+              type="text"
+              placeholder="Search incidents..."
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              style={{ ...selectStyle, width: 220, padding: "6px 12px 6px 32px" }}
+              aria-label="Search incidents"
+            />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <label style={{ fontFamily: fontBody, fontSize: 11, fontWeight: 600, color: theme.onSurfaceVariant }} htmlFor="priority-filter">
+              Priority
+            </label>
+            <select
+              id="priority-filter"
+              style={{ ...selectStyle, width: 128 }}
+              value={priorityFilter}
+              onChange={(e) => setPriorityFilter(e.target.value as Priority | "")}
+            >
+              <option value="">All Priorities</option>
+              <option value="P1">P1 - Critical</option>
+              <option value="P2">P2 - High</option>
+              <option value="P3">P3 - Medium</option>
+              <option value="P4">P4 - Low</option>
+            </select>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <label style={{ fontFamily: fontBody, fontSize: 11, fontWeight: 600, color: theme.onSurfaceVariant }} htmlFor="status-filter">
+              Status
+            </label>
+            <select
+              id="status-filter"
+              style={{ ...selectStyle, width: 160 }}
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as IncidentStatus | "")}
+            >
+              <option value="">All Statuses</option>
+              <option value="Bridge Active">Bridge Active</option>
+              <option value="Pending Vendor">Pending Vendor</option>
+              <option value="Investigating">Investigating</option>
+            </select>
+          </div>
+        </div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 24 }}>
@@ -1060,6 +1361,9 @@ export default function IncidentDashboard({ apiBaseUrl = "" }: IncidentDashboard
         total={total}
         page={page}
         pageSize={PAGE_SIZE}
+        sortBy={sortBy}
+        sortDir={sortDir}
+        onSort={handleSort}
         onPageChange={setPage}
         onRowOpen={setSelectedIncidentNumber}
       />
