@@ -1,73 +1,74 @@
 /**
- * COO Major Incident Dashboard — standalone single-file React component,
- * matching the "target design" mockup 1:1 (the 4-tile KPI dashboard +
- * animated incident detail modal).
+ * COO Major Incident Dashboard — v3, built against HUGO_Incidents (via the
+ * companion hugo_incidents_blueprint.py Flask Blueprint — NOT the older
+ * wft_incidents_blueprint.py or incident_dashboard_router.py; ignore both
+ * of those, they're superseded).
  *
- * This is CONTENT ONLY — no sidebar, no top nav, no search bar. Drop it
- * into your existing shell (which already provides those) and render:
+ * This is CONTENT ONLY — no sidebar, no top nav. Drop it into your existing
+ * shell and render:
  *
  *   <IncidentDashboard />
  *   <IncidentDashboard apiBaseUrl="/api" />                 // explicit base path
  *   <IncidentDashboard apiBaseUrl="https://host:8000" />    // different host
  *
- * DATA: this version fetches from a backend — the companion
- * `incident_dashboard_router.py` (same pairing pattern as the earlier
- * incidents_router.py + IncidentConsole.tsx). `apiBaseUrl` defaults to ""
- * — same-origin relative fetches to "/api/incidents...". That matches
- * mounting that router directly into your existing backend app.
- *
- * Behavior (matches the ideal flow):
- *   - 4 KPI tiles at the top:
- *       1. P1 & P2 — WFT-Wide      (count of all P1/P2 incidents)
- *       2. Major Incidents — COO Caused
- *       3. Major Incidents — COO Impacted
- *       4. P3 & P4 — TCOO Caused
- *   - The table defaults to showing ALL incidents regardless of category.
- *   - Clicking a tile filters the table to that category; clicking the
- *     same tile again (or the "x" on the filter chip) clears the filter.
- *   - Clicking a row (or its sparkle button) opens an 80vw x 80vh animated
- *     detail panel: root cause, impact to COO services, customer/client
- *     impact, incident commander, a Join Bridge link, an AI-generated
- *     summary, and a timeline.
- *
- * No external CSS, font, or icon-font dependency — plain inline styles,
- * same Institutional Heritage palette as the rest of this project.
- * Requires only `react` and `react-dom` (createPortal).
+ * WHAT'S NEW IN v3 (vs the version with the centered popup modal):
+ *   - 5 KPI tiles instead of 4: a new red "Total Incidents" tile (with a
+ *     Resolved/Open breakdown line) is now first, followed by the original
+ *     4 (P1 & P2, COO Caused, COO Impacted, P3 & P4).
+ *   - New table columns: Incident #, Priority, Status, Impacted Business
+ *     Group, Impacted Application, and two checkmark columns (Causal CIO /
+ *     Impacted CIO) showing whether TECHCT caused/was impacted.
+ *   - New filter row: search, Open Date range, Priority, Status, and 3
+ *     toggle filters (Major Incident, TCOO-Caused, TCOO-Impacted) — plus a
+ *     collapsible "Advanced Filters" panel with 9 more fields, populated
+ *     from a live /api/incidents/filter-options call (no hardcoded lists).
+ *   - Clicking a row no longer opens a centered popup — it opens a SIDE
+ *     PANEL. The main content shrinks to the left, the panel slides in on
+ *     the right, and the divider between them is draggable (see
+ *     SplitPane below) to resize either side.
+ *   - The detail panel shows real fields (Overview, Cause, Business Impact,
+ *     Close Notes, Work Notes) plus the AI-Generated Summary box back at the
+ *     top, sparkle icon and all — it's still there, just condensed from real
+ *     HUGO_Incidents fields now instead of the old mock version's invented
+ *     text (the wording is composed server-side, see hugo_incidents_
+ *     blueprint.py's _compose_ai_summary()).
  *
  * QUICK EDIT GUIDE — "I want to change X, where do I look?"
  * ------------------------------------------------------------------
  *   Change a color (red, gold, etc.)          -> the `theme` object below
  *   Change fonts                              -> `fontHeadline` / `fontBody` below
  *   Change a tile's title text                -> `TILE_LABELS` (near the bottom)
+ *   Change what a tile counts                 -> hugo_incidents_blueprint.py's
+ *                                                  get_summary() / list_incidents()
  *   Change a Priority badge's color           -> `PRIORITY_STYLES`
  *   Change a Status dot's color               -> `STATUS_DOT_COLOR`
- *   Add/remove a table column                 -> you need to touch 3 places:
- *                                                  1. add a <SortableHeader> in
- *                                                     IncidentsTable's <thead>
- *                                                  2. add a matching <td> in IncidentRow
- *                                                  3. (if it should be sortable) add the
- *                                                     field to SortField above AND to
- *                                                     _SORTABLE_FIELDS in the backend
- *   Add a new dropdown filter option           -> add an <option> in the Priority/Status
- *                                                  <select> near the bottom, matching the
- *                                                  Python enum's exact text in the backend
- *   Change how many rows show per page         -> `PAGE_SIZE` constant (near the bottom)
- *   Change the header title/subtitle text      -> the <h2>/<p> inside the root component,
- *                                                  near the top of the returned JSX
- *   Change what's shown in the detail modal    -> `IncidentDetailModal` (the `<Fact>` rows
- *                                                  and the AI-summary/timeline sections)
+ *   Change the AI-Generated Summary wording    -> hugo_incidents_blueprint.py's
+ *                                                  _compose_ai_summary()
+ *   Change the AI-Generated Summary's look     -> `AiSummaryCard` / `IconSparkle`
+ *   Add/remove a table column                 -> touch 3 places: the
+ *                                                  <SortableHeader> in
+ *                                                  IncidentsTable's <thead>,
+ *                                                  the matching <td> in
+ *                                                  IncidentRow, and (if
+ *                                                  sortable) _SORTABLE_FIELDS
+ *                                                  in the backend
+ *   Add/remove an Advanced Filter field        -> `ADVANCED_FILTER_FIELDS`
+ *                                                  below AND the matching dict
+ *                                                  in hugo_incidents_blueprint.py
+ *   Change the default split-panel width       -> `DEFAULT_DETAIL_WIDTH_PCT`
+ *   Change how wide the panel can be dragged    -> `MIN_DETAIL_WIDTH_PCT` /
+ *                                                  `MAX_DETAIL_WIDTH_PCT`
+ *   Change what's shown in the detail panel    -> `IncidentDetailPanel`
+ *   Change how many rows show per page         -> `PAGE_SIZE` constant
  *   This file only fetches/displays data — to change WHAT data shows up
- *   (add an incident, change wording, etc.) edit incident_dashboard_router.py instead.
+ *   edit hugo_incidents_blueprint.py instead.
  */
 
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
-import { createPortal } from "react-dom";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 // ---------------------------------------------------------------------------
-// Theme — Institutional Heritage palette, ported 1:1 from the design tokens.
-// EVERY color used anywhere in this file comes from this one object — to
-// re-theme the whole dashboard, change the hex values here rather than
-// hunting through the JSX below.
+// Theme — Institutional Heritage palette. Every color used anywhere in this
+// file comes from this one object.
 // ---------------------------------------------------------------------------
 
 const theme = {
@@ -94,74 +95,118 @@ const theme = {
   outline: "#916f6c",
   outlineVariant: "#e6bdb9",
   inverseSurface: "#303030",
+  success: "#2e7d32",
 } as const;
 
 const fontHeadline = '"Source Serif 4", Georgia, "Times New Roman", serif';
 const fontBody = '"Work Sans", "Segoe UI", Arial, sans-serif';
 
 // ---------------------------------------------------------------------------
-// Types (mirrors incident_dashboard_router.py's Pydantic models 1:1)
-//
-// IMPORTANT: these types and the Python models in incident_dashboard_router.py
-// must stay in sync. If you rename a field or add a new Priority/Status/
-// Category value on the backend, make the matching change here too (and
-// vice versa) — field names and enum string values are compared as plain
-// text between frontend and backend, so a mismatch just silently shows
-// nothing instead of throwing an error you'd notice.
+// Types — mirror the JSON shapes hugo_incidents_blueprint.py's Flask routes
+// return. IMPORTANT: keep these in sync with that file — field names and
+// enum string values (Priority/Status) are compared as plain text between
+// frontend and backend, so a mismatch just silently shows nothing instead of
+// throwing an error you'd notice.
 // ---------------------------------------------------------------------------
 
-export type Priority = "P1" | "P2" | "P3" | "P4";
-export type IncidentStatus = "Bridge Active" | "Pending Vendor" | "Investigating";
-export type Category = "COO Caused" | "COO Impacted" | "TCOO Caused" | "WFT-Wide";
-export type TileFilter = "P1_P2_WFT" | "COO_CAUSED" | "COO_IMPACTED" | "TCOO_CAUSED" | null;
-export type SortField = "incident_number" | "priority" | "category" | "status" | "root_cause" | "customer_impact";
+export type Priority = "P1" | "P2" | "P3" | "P4" | "P5";
+export type IncidentStatus = "New" | "In Progress" | "Resolved" | "Closed";
+export type TileFilter = "P1_P2" | "COO_CAUSED" | "COO_IMPACTED" | "P3_P4_TECHCT" | null;
+export type SortField =
+  | "incident_number"
+  | "priority"
+  | "status"
+  | "impacted_business_group"
+  | "impacted_application"
+  | "causal_cio_check"
+  | "impacted_cio_check";
 export type SortDir = "asc" | "desc";
 
-export interface Incident {
+// The row shape returned by GET /api/incidents (list_incidents()'s "items").
+export interface IncidentRowData {
   incident_number: string;
   priority: Priority;
-  category: Category;
   status: IncidentStatus;
-  opened_at: string; // ISO
-  root_cause: string;
-  customer_impact: string;
-}
-
-export interface TimelineEntry {
-  timestamp: string;
-  author: string;
-  note: string;
-}
-
-export interface IncidentDetail extends Incident {
-  description: string;
-  impact_to_coo_services: string;
-  customer_client_impact: string;
-  incident_commander: string;
-  bridge_url: string | null;
-  ai_summary: string;
-  updates: TimelineEntry[];
+  impacted_business_group: string | null;
+  impacted_application: string | null;
+  causal_cio_check: boolean;
+  impacted_cio_check: boolean;
 }
 
 export interface IncidentListResponse {
-  items: Incident[];
+  items: IncidentRowData[];
   total: number;
   page: number;
   page_size: number;
 }
 
 export interface SummaryResponse {
-  p1_p2_wft: number;
+  total: number;
+  total_resolved: number;
+  total_open: number;
+  p1_p2: number;
   coo_caused: number;
   coo_impacted: number;
-  tcoo_caused: number;
+  p3_p4_techct: number;
 }
 
+// The full shape returned by GET /api/incidents/{incident_number} — every
+// real HUGO_Incidents field the detail panel can show. Nothing here is
+// fabricated (no AI summary, no invented commander).
+export interface IncidentDetail {
+  incident_number: string;
+  priority: Priority;
+  status: IncidentStatus;
+  major_incident: boolean;
+  opened_at: string | null;
+  resolved_at: string | null;
+  closed_at: string | null;
+  causal_cio_org: string | null;
+  causal_cio_direct_org: string | null;
+  impacted_cio_org: string | null;
+  impacted_cio_direct_org: string | null;
+  causal_business_group: string | null;
+  impacted_business_group: string | null;
+  causal_application: string | null;
+  causal_app_id: string | null;
+  impacted_application: string | null;
+  impacted_app_id: string | null;
+  causal_platform_leader: string | null;
+  impacted_platform_leader: string | null;
+  assignment_group: string | null;
+  short_description: string | null;
+  description: string | null;
+  cause: string | null;
+  overview: string | null;
+  business_impact: string | null;
+  close_notes: string | null;
+  work_notes: string | null;
+  // A short paragraph composed server-side from the real fields above (Cause,
+  // Business Impact, Platform Leader, Status) — not fabricated detail. Shown
+  // in the "AI-Generated Summary" box at the top of the detail panel.
+  ai_summary: string | null;
+}
+
+// The 9 Advanced Filter fields, in the exact order requested. Each key here
+// must match a key in hugo_incidents_blueprint.py's ADVANCED_FILTER_FIELDS
+// dict — that's both the query param name AND the key in the
+// /api/incidents/filter-options response.
+const ADVANCED_FILTER_FIELDS: { key: string; label: string }[] = [
+  { key: "impacted_cio_org", label: "Impacted CIO Org" },
+  { key: "impacted_cio_direct_org", label: "Impacted CIO Direct Org" },
+  { key: "causal_cio_direct_org", label: "Causal CIO Direct Org" },
+  { key: "causal_business_group", label: "Causal Business Group" },
+  { key: "impacted_business_group", label: "Impacted Business Group" },
+  { key: "causal_app_id", label: "Causal App Id" },
+  { key: "impacted_app_id", label: "Impacted App Id" },
+  { key: "causal_platform_leader", label: "Causal Platform Leader" },
+  { key: "impacted_platform_leader", label: "Impacted Platform Leader" },
+];
+
+export type FilterOptions = Record<string, string[]>;
+
 // ---------------------------------------------------------------------------
-// API client — everything below talks to incident_dashboard_router.py.
-// You shouldn't need to edit this section unless you're adding a brand-new
-// endpoint or query parameter; for wording/data changes, edit the backend
-// file instead.
+// API client — everything below talks to hugo_incidents_blueprint.py.
 // ---------------------------------------------------------------------------
 
 class ApiError extends Error {
@@ -192,42 +237,50 @@ async function apiGet<T>(
   return (await res.json()) as T;
 }
 
-// Fetches one page of the incidents table. Called whenever a tile, filter,
-// search box, sort header, or page button changes — see the root component's
-// useEffect near the bottom. Every param here becomes a "?x=..." on the
-// request; the backend's list_incidents() function is what actually reads them.
-function listIncidents(
-  apiBaseUrl: string,
-  params: {
-    tile?: TileFilter;
-    priority?: Priority | "";
-    status?: IncidentStatus | "";
-    q?: string;
-    sortBy?: SortField | null;
-    sortDir?: SortDir;
-    page: number;
-    pageSize: number;
-  }
-): Promise<IncidentListResponse> {
+export interface ListIncidentsParams {
+  tile?: TileFilter;
+  priority?: Priority | "";
+  status?: IncidentStatus | "";
+  majorIncident?: "" | "true" | "false";
+  tcooCaused?: "" | "true" | "false";
+  tcooImpacted?: "" | "true" | "false";
+  openDateFrom?: string;
+  openDateTo?: string;
+  q?: string;
+  sortBy?: SortField | null;
+  sortDir?: SortDir;
+  advanced?: Record<string, string>;
+  page: number;
+  pageSize: number;
+}
+
+function listIncidents(apiBaseUrl: string, params: ListIncidentsParams): Promise<IncidentListResponse> {
   return apiGet<IncidentListResponse>(apiBaseUrl, "/api/incidents", {
     tile: params.tile ?? undefined,
     priority: params.priority || undefined,
     status: params.status || undefined,
+    major_incident: params.majorIncident || undefined,
+    tcoo_caused: params.tcooCaused || undefined,
+    tcoo_impacted: params.tcooImpacted || undefined,
+    open_date_from: params.openDateFrom || undefined,
+    open_date_to: params.openDateTo || undefined,
     q: params.q || undefined,
     sort_by: params.sortBy ?? undefined,
     sort_dir: params.sortBy ? params.sortDir : undefined,
     page: params.page.toString(),
     page_size: params.pageSize.toString(),
+    ...(params.advanced || {}),
   });
 }
 
-// Fetches the 4 numbers shown on the KPI tiles.
 function getSummary(apiBaseUrl: string): Promise<SummaryResponse> {
   return apiGet<SummaryResponse>(apiBaseUrl, "/api/incidents/summary");
 }
 
-// Fetches the full detail for one incident, used to populate the modal
-// when a row is clicked.
+function getFilterOptions(apiBaseUrl: string): Promise<FilterOptions> {
+  return apiGet<FilterOptions>(apiBaseUrl, "/api/incidents/filter-options");
+}
+
 function getIncidentDetail(apiBaseUrl: string, incidentNumber: string): Promise<IncidentDetail> {
   return apiGet<IncidentDetail>(apiBaseUrl, `/api/incidents/${encodeURIComponent(incidentNumber)}`);
 }
@@ -236,22 +289,11 @@ function getIncidentDetail(apiBaseUrl: string, incidentNumber: string): Promise<
 // Format utils
 // ---------------------------------------------------------------------------
 
-function formatOpenedAt(isoString: string): string {
+function formatDateTime(isoString: string | null): string {
+  if (!isoString) return "—";
   const date = new Date(isoString);
-  const datePart = date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  const timePart = date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
-  return `${datePart}, ${timePart}`;
-}
-
-function formatElapsed(isoString: string): string {
-  const minutes = Math.max(Math.floor((Date.now() - new Date(isoString).getTime()) / 60_000), 0);
-  const hours = Math.floor(minutes / 60);
-  const mins = minutes % 60;
-  return `${hours}h ${mins.toString().padStart(2, "0")}m`;
-}
-
-function formatTimelineTimestamp(isoString: string): string {
-  return new Date(isoString).toLocaleString("en-US", {
+  if (Number.isNaN(date.getTime())) return isoString;
+  return date.toLocaleString("en-US", {
     month: "short",
     day: "numeric",
     hour: "numeric",
@@ -261,12 +303,7 @@ function formatTimelineTimestamp(isoString: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Inline SVG icons (no icon-font dependency)
-//
-// These are all plain decorative line-icons — purely visual, no data or
-// logic in them. Safe to swap out or delete any of these if you'd rather
-// use an icon library (e.g. lucide-react) instead; just keep the same
-// component name and a `size` prop so the call sites below don't need to change.
+// Inline SVG icons — purely decorative, safe to swap for an icon library.
 // ---------------------------------------------------------------------------
 
 function IconBase({ children, size = 20 }: { children: ReactNode; size?: number }) {
@@ -299,6 +336,12 @@ const IconChevronRight = (p: { size?: number }) => (
   </IconBase>
 );
 
+const IconChevronDown = (p: { size?: number }) => (
+  <IconBase size={p.size}>
+    <path d="m6 9 6 6 6-6" />
+  </IconBase>
+);
+
 const IconSearch = (p: { size?: number }) => (
   <IconBase size={p.size}>
     <circle cx="11" cy="11" r="8" />
@@ -327,25 +370,43 @@ const IconClose = (p: { size?: number }) => (
   </IconBase>
 );
 
-const IconCall = (p: { size?: number }) => (
+const IconCheck = (p: { size?: number }) => (
   <IconBase size={p.size}>
-    <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z" />
+    <path d="M20 6 9 17l-5-5" />
   </IconBase>
+);
+
+// The little 4-point "sparkle" used next to the AI-Generated Summary label.
+// Filled (not stroked, unlike the other icons above) so it reads as a solid
+// star/glint rather than an outline. Two extra tiny sparkles are added around
+// it in AiSummaryCard for the twinkle effect.
+const IconSparkle = (p: { size?: number; className?: string; style?: CSSProperties }) => (
+  <svg
+    width={p.size ?? 16}
+    height={p.size ?? 16}
+    viewBox="0 0 24 24"
+    fill="currentColor"
+    aria-hidden="true"
+    className={p.className}
+    style={p.style}
+  >
+    <path d="M12 2c.6 3.8 1.9 6.1 4 8.2 2.1 2 4.4 3.2 8 3.8-3.8.6-6.1 1.9-8.2 4-2 2.1-3.2 4.4-3.8 8-.6-3.8-1.9-6.1-4-8.2-2.1-2-4.4-3.2-8-3.8 3.8-.6 6.1-1.9 8.2-4 2-2.1 3.2-4.4 3.8-8z" />
+  </svg>
 );
 
 // ---------------------------------------------------------------------------
 // Badges
 // ---------------------------------------------------------------------------
 
-// The colored pill shown next to each Priority (P1/P2/P3/P4) in the table
-// and modal. To add a new priority (e.g. "P5"), add a matching entry here
-// AND add "P5" to the Priority type above AND to the Priority enum in
-// incident_dashboard_router.py.
+// The colored pill shown next to each Priority (P1-P5). To add another
+// priority, add a matching entry here AND to the Priority type above AND to
+// PRIORITY_MAP in hugo_incidents_blueprint.py.
 const PRIORITY_STYLES: Record<Priority, { bg: string; fg: string }> = {
   P1: { bg: theme.errorContainer, fg: theme.onErrorContainer },
   P2: { bg: theme.secondaryContainer, fg: theme.onSecondaryContainer },
   P3: { bg: theme.surfaceVariant, fg: theme.onSurfaceVariant },
   P4: { bg: theme.surfaceVariant, fg: theme.onSurfaceVariant },
+  P5: { bg: theme.surfaceVariant, fg: theme.onSurfaceVariant },
 };
 
 function PriorityBadge({ priority }: { priority: Priority }) {
@@ -369,15 +430,17 @@ function PriorityBadge({ priority }: { priority: Priority }) {
   );
 }
 
-// The color of the small status dot shown next to each incident's status
-// text. To add a new status (e.g. "Resolved"), add a matching entry here
-// AND to the IncidentStatus type above AND to the IncidentStatus enum in
-// incident_dashboard_router.py.
+// The color of the small status dot. These 4 values (New / In Progress /
+// Resolved / Closed) are your real HUGO_Incidents statuses — see STATUS_MAP
+// in hugo_incidents_blueprint.py.
 const STATUS_DOT_COLOR: Record<IncidentStatus, string> = {
-  "Bridge Active": theme.error,
-  "Pending Vendor": theme.secondary,
-  Investigating: theme.outline,
+  New: theme.error,
+  "In Progress": theme.secondary,
+  Resolved: theme.outline,
+  Closed: theme.outline,
 };
+
+const LIVE_STATUS: IncidentStatus = "In Progress";
 
 function StatusIndicator({ status }: { status: IncidentStatus }) {
   return (
@@ -386,7 +449,7 @@ function StatusIndicator({ status }: { status: IncidentStatus }) {
         display: "flex",
         alignItems: "center",
         gap: 6,
-        color: status === "Bridge Active" ? theme.onBackground : theme.onSurfaceVariant,
+        color: status === LIVE_STATUS ? theme.onBackground : theme.onSurfaceVariant,
         fontFamily: fontBody,
         fontSize: 14,
       }}
@@ -398,7 +461,7 @@ function StatusIndicator({ status }: { status: IncidentStatus }) {
           borderRadius: "50%",
           background: STATUS_DOT_COLOR[status],
           flexShrink: 0,
-          animation: status === "Bridge Active" ? "ic-pulse 1.6s ease-in-out infinite" : undefined,
+          animation: status === LIVE_STATUS ? "ic-pulse 1.6s ease-in-out infinite" : undefined,
         }}
       />
       {status}
@@ -406,44 +469,71 @@ function StatusIndicator({ status }: { status: IncidentStatus }) {
   );
 }
 
+// The small checkmark used for the "Causal CIO" / "Impacted CIO" table
+// columns — true means TECHCT was the causal/impacted org for this incident.
+function TechctCheck({ value }: { value: boolean }) {
+  if (!value) {
+    return <span style={{ color: theme.outline, fontFamily: fontBody, fontSize: 14 }}>—</span>;
+  }
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 20,
+        height: 20,
+        borderRadius: "50%",
+        background: theme.errorContainer,
+        color: theme.onErrorContainer,
+      }}
+      aria-label="Yes"
+    >
+      <IconCheck size={12} />
+    </span>
+  );
+}
+
 // ---------------------------------------------------------------------------
-// KPI tile — one of the 4 clickable boxes at the top of the dashboard.
-// `selected` = this tile is the active filter (red border + "Selected" tag).
-// `restingAccent` = an optional thin top-border color shown when NOT
-// selected (used on the P1&P2 and COO Impacted tiles to hint at severity;
-// omit it for a plain tile with no accent).
+// KPI tiles
 // ---------------------------------------------------------------------------
 
 function KpiTile({
   label,
   value,
+  subtext,
   restingAccent,
+  emphasized,
   selected,
   onClick,
 }: {
   label: string;
   value: number | string;
+  subtext?: string;
   restingAccent?: string;
+  emphasized?: boolean;
   selected: boolean;
-  onClick: () => void;
+  onClick?: () => void;
 }) {
   const [hovered, setHovered] = useState(false);
+  const clickable = !!onClick;
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={!clickable}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
         position: "relative",
         textAlign: "left",
-        background: selected ? "rgba(175,0,23,0.06)" : theme.surface,
+        background: emphasized ? theme.primary : selected ? "rgba(175,0,23,0.06)" : theme.surface,
         border: selected ? `2px solid ${theme.primary}` : `1px solid ${theme.outlineVariant}`,
-        borderTop: !selected && restingAccent ? `4px solid ${restingAccent}` : undefined,
+        borderTop: !selected && !emphasized && restingAccent ? `4px solid ${restingAccent}` : undefined,
         borderRadius: 4,
         padding: 20,
-        cursor: "pointer",
-        boxShadow: hovered ? "0 2px 6px rgba(0,0,0,0.08)" : "0 1px 2px rgba(0,0,0,0.04)",
+        cursor: clickable ? "pointer" : "default",
+        boxShadow: hovered && clickable ? "0 2px 6px rgba(0,0,0,0.08)" : "0 1px 2px rgba(0,0,0,0.04)",
         transition: "box-shadow 120ms ease",
         fontFamily: fontBody,
       }}
@@ -473,7 +563,7 @@ function KpiTile({
           fontWeight: 700,
           letterSpacing: "0.05em",
           textTransform: "uppercase",
-          color: selected ? theme.primary : theme.onSurfaceVariant,
+          color: emphasized ? theme.onPrimaryContainer : selected ? theme.primary : theme.onSurfaceVariant,
           margin: "0 0 4px",
           paddingRight: selected ? 64 : 0,
         }}
@@ -486,13 +576,60 @@ function KpiTile({
           fontSize: 40,
           lineHeight: "48px",
           fontWeight: 700,
-          color: selected ? theme.primary : theme.onBackground,
+          color: emphasized ? theme.onPrimary : selected ? theme.primary : theme.onBackground,
           margin: 0,
         }}
       >
         {value}
       </p>
+      {subtext && (
+        <p
+          style={{
+            fontFamily: fontBody,
+            fontSize: 13,
+            fontWeight: 600,
+            color: emphasized ? theme.onPrimaryContainer : theme.onSurfaceVariant,
+            margin: "6px 0 0",
+          }}
+        >
+          {subtext}
+        </p>
+      )}
     </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Filter row
+// ---------------------------------------------------------------------------
+
+const selectStyle: CSSProperties = {
+  border: `1px solid ${theme.outlineVariant}`,
+  background: theme.surface,
+  borderRadius: 4,
+  padding: "6px 12px",
+  fontFamily: fontBody,
+  fontSize: 14,
+  color: theme.onSurface,
+  outline: "none",
+  boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+};
+
+const labelStyle: CSSProperties = {
+  fontFamily: fontBody,
+  fontSize: 11,
+  fontWeight: 600,
+  color: theme.onSurfaceVariant,
+};
+
+function FilterField({ label, htmlFor, children }: { label: string; htmlFor: string; children: ReactNode }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <label style={labelStyle} htmlFor={htmlFor}>
+        {label}
+      </label>
+      {children}
+    </div>
   );
 }
 
@@ -519,22 +656,28 @@ const td: CSSProperties = {
   borderBottom: `1px solid ${theme.surfaceDim}`,
 };
 
-// One row of the incidents table. Add/remove a <td> here to add/remove a
-// column — and add/remove the matching <SortableHeader> in IncidentsTable
-// below (both must have the same number of columns, in the same order).
 function IncidentRow({
   incident,
   isEven,
+  isSelected,
   onOpen,
 }: {
-  incident: Incident;
+  incident: IncidentRowData;
   isEven: boolean;
+  isSelected: boolean;
   onOpen: (incidentNumber: string) => void;
 }) {
   const [hovered, setHovered] = useState(false);
   return (
     <tr
-      style={{ background: hovered || isEven ? theme.surfaceContainerLow : theme.surface, cursor: "pointer" }}
+      style={{
+        background: isSelected
+          ? "rgba(175,0,23,0.06)"
+          : hovered || isEven
+          ? theme.surfaceContainerLow
+          : theme.surface,
+        cursor: "pointer",
+      }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       onClick={() => onOpen(incident.incident_number)}
@@ -552,32 +695,28 @@ function IncidentRow({
       <td style={td}>
         <PriorityBadge priority={incident.priority} />
       </td>
-      <td style={{ ...td, color: theme.onSurfaceVariant }}>{incident.category}</td>
       <td style={td}>
         <StatusIndicator status={incident.status} />
       </td>
+      <td style={{ ...td, color: theme.onSurfaceVariant }}>{incident.impacted_business_group || "—"}</td>
       <td style={{ ...td, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {incident.root_cause}
+        {incident.impacted_application || "—"}
       </td>
-      <td style={{ ...td, maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {incident.customer_impact}
+      <td style={{ ...td, textAlign: "center" }}>
+        <TechctCheck value={incident.causal_cio_check} />
       </td>
-      <td style={{ ...td, textAlign: "center", opacity: hovered ? 1 : 0.55, transition: "opacity 120ms ease" }}>
-        <span aria-hidden="true">✨</span>
+      <td style={{ ...td, textAlign: "center" }}>
+        <TechctCheck value={incident.impacted_cio_check} />
       </td>
     </tr>
   );
 }
 
-// A clickable column header. Clicking it calls onSort(field); the parent
-// (IncidentsTable/root component) decides what that does — toggling between
-// ascending/descending and re-fetching from the backend already sorted.
-// `field` must be one of the SortField values, which must also exist as a
-// key in the backend's _SORTABLE_FIELDS dict, or sorting that column will fail.
 function SortableHeader({
   label,
   field,
   width,
+  align,
   sortBy,
   sortDir,
   onSort,
@@ -585,13 +724,14 @@ function SortableHeader({
   label: string;
   field: SortField;
   width?: number;
+  align?: "left" | "center";
   sortBy: SortField | null;
   sortDir: SortDir;
   onSort: (field: SortField) => void;
 }) {
   const active = sortBy === field;
   return (
-    <th style={{ ...th, width }}>
+    <th style={{ ...th, width, textAlign: align || "left" }}>
       <button
         type="button"
         onClick={() => onSort(field)}
@@ -624,10 +764,6 @@ function SortableHeader({
   );
 }
 
-// The table itself: header row (6 sortable columns), body rows (loading /
-// error / empty-state / actual rows), and the pagination footer. This
-// component doesn't fetch data or hold filter state itself — it just
-// displays whatever the root component (at the bottom of this file) hands it.
 function IncidentsTable({
   incidents,
   loading,
@@ -637,11 +773,12 @@ function IncidentsTable({
   pageSize,
   sortBy,
   sortDir,
+  selectedIncidentNumber,
   onSort,
   onPageChange,
   onRowOpen,
 }: {
-  incidents: Incident[];
+  incidents: IncidentRowData[];
   loading: boolean;
   error: string | null;
   total: number;
@@ -649,6 +786,7 @@ function IncidentsTable({
   pageSize: number;
   sortBy: SortField | null;
   sortDir: SortDir;
+  selectedIncidentNumber: string | null;
   onSort: (field: SortField) => void;
   onPageChange: (page: number) => void;
   onRowOpen: (incidentNumber: string) => void;
@@ -656,6 +794,7 @@ function IncidentsTable({
   const totalPages = Math.max(Math.ceil(total / pageSize), 1);
   const rangeStart = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const rangeEnd = Math.min(page * pageSize, total);
+  const COLS = 7;
 
   return (
     <div
@@ -671,41 +810,47 @@ function IncidentsTable({
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: theme.surfaceContainerLow, borderBottom: `1px solid ${theme.outlineVariant}` }}>
-              <SortableHeader label="Incident #" field="incident_number" width={112} sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
+              <SortableHeader label="Incident #" field="incident_number" width={120} sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
               <SortableHeader label="Priority" field="priority" width={90} sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
-              <SortableHeader label="Category" field="category" width={130} sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
-              <SortableHeader label="Status" field="status" width={150} sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
-              <SortableHeader label="Root Cause" field="root_cause" sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
-              <SortableHeader label="Customer Impact" field="customer_impact" sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
-              <th style={{ ...th, width: 40 }} />
+              <SortableHeader label="Status" field="status" width={140} sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
+              <SortableHeader label="Impacted Business Group" field="impacted_business_group" sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
+              <SortableHeader label="Impacted Application" field="impacted_application" sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
+              <SortableHeader label="Causal CIO" field="causal_cio_check" width={90} align="center" sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
+              <SortableHeader label="Impacted CIO" field="impacted_cio_check" width={100} align="center" sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
             </tr>
           </thead>
           <tbody>
             {loading && (
               <tr>
-                <td colSpan={7} style={{ ...td, textAlign: "center", padding: "32px 16px", color: theme.onSurfaceVariant }}>
+                <td colSpan={COLS} style={{ ...td, textAlign: "center", padding: "32px 16px", color: theme.onSurfaceVariant }}>
                   Loading incidents…
                 </td>
               </tr>
             )}
             {!loading && error && (
               <tr>
-                <td colSpan={7} style={{ ...td, textAlign: "center", padding: "32px 16px", color: theme.error }}>
+                <td colSpan={COLS} style={{ ...td, textAlign: "center", padding: "32px 16px", color: theme.error }}>
                   {error}
                 </td>
               </tr>
             )}
             {!loading && !error && incidents.length === 0 && (
               <tr>
-                <td colSpan={7} style={{ ...td, textAlign: "center", padding: "32px 16px", color: theme.onSurfaceVariant }}>
-                  No incidents match the current filter.
+                <td colSpan={COLS} style={{ ...td, textAlign: "center", padding: "32px 16px", color: theme.onSurfaceVariant }}>
+                  No incidents match the current filters.
                 </td>
               </tr>
             )}
             {!loading &&
               !error &&
               incidents.map((incident, index) => (
-                <IncidentRow key={incident.incident_number} incident={incident} isEven={index % 2 === 1} onOpen={onRowOpen} />
+                <IncidentRow
+                  key={incident.incident_number}
+                  incident={incident}
+                  isEven={index % 2 === 1}
+                  isSelected={incident.incident_number === selectedIncidentNumber}
+                  onOpen={onRowOpen}
+                />
               ))}
           </tbody>
         </table>
@@ -770,23 +915,10 @@ function IncidentsTable({
 }
 
 // ---------------------------------------------------------------------------
-// Incident detail modal (80vw x 80vh, centered, animated in/out)
-//
-// Opens when a table row is clicked. Fetches the full IncidentDetail for
-// just that one incident (getIncidentDetail, above) and renders it in two
-// columns: key facts + Join Bridge button on the left, AI summary + timeline
-// on the right. To change what's shown, edit the <Fact> rows and the
-// AI-summary/Timeline blocks further down in this component — to change the
-// underlying TEXT those show, edit incident_dashboard_router.py instead
-// (_compose_ai_summary, _build_timeline, _DETAIL_OVERRIDES).
+// Detail panel (side panel — replaces the old centered popup modal)
 // ---------------------------------------------------------------------------
 
-const ANIMATION_MS = 200;
-
-// One label+value pair in the modal's left column (e.g. "Root Cause" ->
-// the actual root cause text). Set accent=true to show the value in red/bold
-// (used for Customer/Client Impact to make it stand out).
-function Fact({ label, value, accent = false }: { label: string; value: string; accent?: boolean }) {
+function Fact({ label, value }: { label: string; value: string | null }) {
   return (
     <div>
       <p
@@ -802,22 +934,96 @@ function Fact({ label, value, accent = false }: { label: string; value: string; 
       >
         {label}
       </p>
-      <p
-        style={{
-          fontFamily: fontBody,
-          fontSize: 16,
-          fontWeight: accent ? 700 : 400,
-          color: accent ? theme.primary : theme.onBackground,
-          margin: 0,
-        }}
-      >
+      <p style={{ fontFamily: fontBody, fontSize: 14, color: theme.onBackground, margin: 0 }}>{value || "—"}</p>
+    </div>
+  );
+}
+
+// The "AI-Generated Summary" box — a gold-tinted card with a twinkling
+// sparkle icon next to the label, shown first in the detail panel. The text
+// itself is composed server-side by hugo_incidents_blueprint.py's
+// _compose_ai_summary() from real Cause/Business Impact/Status fields, so
+// this component just needs to render whatever string it's given; it returns
+// null (renders nothing) if the backend didn't send one.
+function AiSummaryCard({ value }: { value: string | null }) {
+  if (!value) return null;
+  return (
+    <div
+      style={{
+        position: "relative",
+        background: `linear-gradient(135deg, ${theme.tertiaryContainer} 0%, ${theme.surfaceContainerLow} 75%)`,
+        border: `1px solid ${theme.secondaryContainer}`,
+        borderRadius: 4,
+        padding: 16,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <span style={{ position: "relative", display: "inline-flex", color: theme.secondary }}>
+          <IconSparkle size={16} style={{ animation: "ic-twinkle 2.4s ease-in-out infinite" }} />
+          <IconSparkle
+            size={8}
+            style={{
+              position: "absolute",
+              top: -5,
+              right: -7,
+              animation: "ic-twinkle 2.4s ease-in-out infinite",
+              animationDelay: "0.5s",
+            }}
+          />
+        </span>
+        <p
+          style={{
+            fontFamily: fontBody,
+            fontSize: 11,
+            fontWeight: 700,
+            letterSpacing: "0.05em",
+            textTransform: "uppercase",
+            color: theme.secondary,
+            margin: 0,
+          }}
+        >
+          AI-Generated Summary
+        </p>
+      </div>
+      <p style={{ fontFamily: fontBody, fontSize: 14, lineHeight: "22px", color: theme.onBackground, margin: 0 }}>
         {value}
       </p>
     </div>
   );
 }
 
-function IncidentDetailModal({
+function NotesSection({ label, value }: { label: string; value: string | null }) {
+  if (!value) return null;
+  return (
+    <div
+      style={{
+        background: theme.surfaceContainerLow,
+        border: `1px solid ${theme.outlineVariant}`,
+        borderRadius: 4,
+        padding: 16,
+      }}
+    >
+      <p
+        style={{
+          fontFamily: fontBody,
+          fontSize: 11,
+          fontWeight: 700,
+          letterSpacing: "0.05em",
+          textTransform: "uppercase",
+          color: theme.onSurfaceVariant,
+          margin: "0 0 8px",
+        }}
+      >
+        {label}
+      </p>
+      <p style={{ fontFamily: fontBody, fontSize: 14, lineHeight: "22px", color: theme.onBackground, margin: 0, whiteSpace: "pre-wrap" }}>
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function IncidentDetailPanel({
   apiBaseUrl,
   incidentNumber,
   onClose,
@@ -826,19 +1032,8 @@ function IncidentDetailModal({
   incidentNumber: string;
   onClose: () => void;
 }) {
-  const [visible, setVisible] = useState(false);
   const [detail, setDetail] = useState<IncidentDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  function requestClose() {
-    setVisible(false);
-    window.setTimeout(onClose, ANIMATION_MS);
-  }
-
-  useEffect(() => {
-    const raf = requestAnimationFrame(() => setVisible(true));
-    return () => cancelAnimationFrame(raf);
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -861,232 +1056,218 @@ function IncidentDetailModal({
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiBaseUrl, incidentNumber]);
 
-  useEffect(() => {
-    function handleKey(e: KeyboardEvent) {
-      if (e.key === "Escape") requestClose();
-    }
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  return createPortal(
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 100,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: `${theme.inverseSurface}80`,
-        opacity: visible ? 1 : 0,
-        transition: `opacity ${ANIMATION_MS}ms ease-out`,
-      }}
-      onClick={requestClose}
-      role="presentation"
-    >
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: theme.surface }}>
+      {/* Header */}
       <div
         style={{
-          background: theme.surface,
-          borderRadius: 8,
-          boxShadow: "0 12px 40px rgba(0,0,0,0.35)",
-          border: `1px solid ${theme.outlineVariant}`,
-          width: "80vw",
-          height: "80vh",
+          borderBottom: `1px solid ${theme.outlineVariant}`,
+          padding: "20px 24px",
           display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-          opacity: visible ? 1 : 0,
-          transform: visible ? "scale(1)" : "scale(0.95)",
-          transition: `opacity ${ANIMATION_MS}ms ease-out, transform ${ANIMATION_MS}ms ease-out`,
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: 16,
+          flexShrink: 0,
         }}
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="incident-modal-title"
       >
-        {/* Header */}
-        <div
-          style={{
-            borderBottom: `1px solid ${theme.outlineVariant}`,
-            padding: "24px 32px",
-            display: "flex",
-            alignItems: "flex-start",
-            justifyContent: "space-between",
-            gap: 16,
-            flexShrink: 0,
-          }}
-        >
-          <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
-              <h2
-                id="incident-modal-title"
-                style={{ fontFamily: fontHeadline, fontSize: 24, fontWeight: 700, color: theme.primary, margin: 0 }}
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
+            <h2 style={{ fontFamily: fontHeadline, fontSize: 22, fontWeight: 700, color: theme.primary, margin: 0 }}>
+              {incidentNumber}
+            </h2>
+            {detail && <PriorityBadge priority={detail.priority} />}
+            {detail?.major_incident && (
+              <span
+                style={{
+                  fontFamily: fontBody,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  letterSpacing: "0.05em",
+                  textTransform: "uppercase",
+                  background: theme.primary,
+                  color: theme.onPrimary,
+                  padding: "2px 8px",
+                  borderRadius: 999,
+                }}
               >
-                {incidentNumber}
-              </h2>
-              {detail && (
-                <span
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    padding: "2px 10px",
-                    borderRadius: 2,
-                    fontFamily: fontBody,
-                    fontSize: 12,
-                    fontWeight: 700,
-                    background: theme.errorContainer,
-                    color: theme.onErrorContainer,
-                  }}
-                >
-                  {detail.priority} — {detail.category}
-                </span>
-              )}
-            </div>
-            {detail && (
-              <div style={{ display: "flex", alignItems: "center", gap: 16, color: theme.onSurfaceVariant }}>
-                <StatusIndicator status={detail.status} />
-                <span style={{ fontFamily: fontBody, fontSize: 14 }}>
-                  Created {formatOpenedAt(detail.opened_at)} · {formatElapsed(detail.opened_at)} elapsed
-                </span>
-              </div>
+                Major Incident
+              </span>
             )}
           </div>
-          <button
-            type="button"
-            onClick={requestClose}
-            aria-label="Close incident details"
-            style={{ background: "none", border: "none", cursor: "pointer", padding: 8, margin: -8, color: theme.onSurfaceVariant }}
-          >
-            <IconClose size={24} />
-          </button>
-        </div>
-
-        {/* Body */}
-        <div style={{ flex: 1, overflowY: "auto", padding: 32 }}>
-          {!detail && !error && (
-            <p style={{ fontFamily: fontBody, fontSize: 14, color: theme.onSurfaceVariant }}>
-              Loading incident details…
-            </p>
-          )}
-          {error && <p style={{ fontFamily: fontBody, fontSize: 14, color: theme.error }}>{error}</p>}
-
           {detail && (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 32 }}>
-              {/* Key facts */}
-              <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-                <Fact label="Root Cause" value={detail.description} />
-                <Fact label="Impact to COO Services" value={detail.impact_to_coo_services} />
-                <Fact label="Customer / Client Impact" value={detail.customer_client_impact} accent />
-                <Fact label="Incident Commander" value={detail.incident_commander} />
-
-                {detail.bridge_url && (
-                  <a
-                    href={detail.bridge_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    style={{
-                      marginTop: 8,
-                      display: "inline-flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      gap: 8,
-                      background: theme.primaryContainer,
-                      color: theme.onPrimary,
-                      padding: "10px 0",
-                      borderRadius: 4,
-                      fontFamily: fontBody,
-                      fontSize: 12,
-                      fontWeight: 700,
-                      letterSpacing: "0.05em",
-                      textTransform: "uppercase",
-                      textDecoration: "none",
-                      boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
-                    }}
-                  >
-                    <IconCall size={18} />
-                    Join Bridge
-                  </a>
-                )}
-              </div>
-
-              {/* AI summary + timeline */}
-              <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
-                <div
-                  style={{
-                    background: "rgba(235,226,206,0.35)",
-                    border: `1px solid ${theme.outlineVariant}`,
-                    borderRadius: 4,
-                    padding: 20,
-                  }}
-                >
-                  <p
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      fontFamily: fontBody,
-                      fontSize: 11,
-                      fontWeight: 700,
-                      letterSpacing: "0.05em",
-                      textTransform: "uppercase",
-                      color: theme.primary,
-                      margin: "0 0 8px",
-                    }}
-                  >
-                    <span aria-hidden="true">✨</span> AI-Generated Summary
-                  </p>
-                  <p style={{ fontFamily: fontBody, fontSize: 16, lineHeight: "26px", color: theme.onBackground, margin: 0 }}>
-                    {detail.ai_summary}
-                  </p>
-                </div>
-
-                <div>
-                  <p
-                    style={{
-                      fontFamily: fontBody,
-                      fontSize: 11,
-                      fontWeight: 700,
-                      letterSpacing: "0.05em",
-                      textTransform: "uppercase",
-                      color: theme.onSurfaceVariant,
-                      margin: "0 0 16px",
-                    }}
-                  >
-                    Timeline
-                  </p>
-                  <ol style={{ display: "flex", flexDirection: "column", gap: 20, listStyle: "none", margin: 0, padding: 0 }}>
-                    {detail.updates.map((entry, index) => (
-                      <li key={index} style={{ display: "flex", gap: 16 }}>
-                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 4 }}>
-                          <span style={{ width: 8, height: 8, borderRadius: "50%", background: theme.primary, flexShrink: 0 }} />
-                          {index < detail.updates.length - 1 && (
-                            <span style={{ width: 1, flex: 1, background: theme.outlineVariant, marginTop: 4 }} />
-                          )}
-                        </div>
-                        <div style={{ paddingBottom: 4 }}>
-                          <p style={{ fontFamily: fontBody, fontSize: 12, fontWeight: 600, color: theme.onSurfaceVariant, margin: 0 }}>
-                            {formatTimelineTimestamp(entry.timestamp)} · {entry.author}
-                          </p>
-                          <p style={{ fontFamily: fontBody, fontSize: 14, color: theme.onBackground, margin: "4px 0 0" }}>
-                            {entry.note}
-                          </p>
-                        </div>
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-              </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap", color: theme.onSurfaceVariant }}>
+              <StatusIndicator status={detail.status} />
+              <span style={{ fontFamily: fontBody, fontSize: 13 }}>Opened {formatDateTime(detail.opened_at)}</span>
+              {detail.resolved_at && (
+                <span style={{ fontFamily: fontBody, fontSize: 13 }}>Resolved {formatDateTime(detail.resolved_at)}</span>
+              )}
+              {detail.closed_at && (
+                <span style={{ fontFamily: fontBody, fontSize: 13 }}>Closed {formatDateTime(detail.closed_at)}</span>
+              )}
             </div>
           )}
         </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close incident details"
+          style={{ background: "none", border: "none", cursor: "pointer", padding: 8, margin: -8, color: theme.onSurfaceVariant, flexShrink: 0 }}
+        >
+          <IconClose size={22} />
+        </button>
       </div>
-    </div>,
-    document.body
+
+      {/* Body */}
+      <div style={{ flex: 1, overflowY: "auto", padding: 24 }}>
+        {!detail && !error && (
+          <p style={{ fontFamily: fontBody, fontSize: 14, color: theme.onSurfaceVariant }}>Loading incident details…</p>
+        )}
+        {error && <p style={{ fontFamily: fontBody, fontSize: 14, color: theme.error }}>{error}</p>}
+
+        {detail && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+            <AiSummaryCard value={detail.ai_summary} />
+            <NotesSection label="Overview" value={detail.overview} />
+            <NotesSection label="Cause" value={detail.cause} />
+            <NotesSection label="Business Impact" value={detail.business_impact} />
+            <NotesSection label="Work Notes" value={detail.work_notes} />
+            <NotesSection label="Close Notes" value={detail.close_notes} />
+
+            <div>
+              <p
+                style={{
+                  fontFamily: fontBody,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  letterSpacing: "0.05em",
+                  textTransform: "uppercase",
+                  color: theme.onSurfaceVariant,
+                  margin: "0 0 12px",
+                }}
+              >
+                Details
+              </p>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                <Fact label="Causal Application" value={detail.causal_application} />
+                <Fact label="Impacted Application" value={detail.impacted_application} />
+                <Fact label="Causal CIO Org" value={detail.causal_cio_org} />
+                <Fact label="Impacted CIO Org" value={detail.impacted_cio_org} />
+                <Fact label="Causal Business Group" value={detail.causal_business_group} />
+                <Fact label="Impacted Business Group" value={detail.impacted_business_group} />
+                <Fact label="Causal Platform Leader" value={detail.causal_platform_leader} />
+                <Fact label="Impacted Platform Leader" value={detail.impacted_platform_leader} />
+                <Fact label="Assignment Group" value={detail.assignment_group} />
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SplitPane — the draggable divider between the main content and the detail
+// panel. This is the piece that replaces the old centered popup modal.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_DETAIL_WIDTH_PCT = 38;
+const MIN_DETAIL_WIDTH_PCT = 24;
+const MAX_DETAIL_WIDTH_PCT = 65;
+
+function SplitPane({ main, detail }: { main: ReactNode; detail: ReactNode | null }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [detailWidthPct, setDetailWidthPct] = useState(DEFAULT_DETAIL_WIDTH_PCT);
+  const [isDragging, setIsDragging] = useState(false);
+
+  useEffect(() => {
+    if (!isDragging) return;
+
+    function handleMove(e: PointerEvent) {
+      const container = containerRef.current;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const pctFromRight = ((rect.right - e.clientX) / rect.width) * 100;
+      const clamped = Math.min(Math.max(pctFromRight, MIN_DETAIL_WIDTH_PCT), MAX_DETAIL_WIDTH_PCT);
+      setDetailWidthPct(clamped);
+    }
+    function handleUp() {
+      setIsDragging(false);
+    }
+
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp);
+    return () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+    };
+  }, [isDragging]);
+
+  const detailOpen = detail !== null;
+
+  return (
+    <div ref={containerRef} style={{ display: "flex", width: "100%", alignItems: "stretch", position: "relative" }}>
+      <div
+        style={{
+          width: detailOpen ? `${100 - detailWidthPct}%` : "100%",
+          transition: isDragging ? "none" : "width 220ms ease",
+          minWidth: 0,
+        }}
+      >
+        {main}
+      </div>
+
+      {detailOpen && (
+        <>
+          {/* The draggable divider. Drag left/right to resize both panes. */}
+          <div
+            onPointerDown={(e) => {
+              e.preventDefault();
+              setIsDragging(true);
+            }}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize incident detail panel"
+            style={{
+              width: 8,
+              flexShrink: 0,
+              cursor: "col-resize",
+              background: isDragging ? theme.primary : "transparent",
+              position: "relative",
+              transition: isDragging ? "none" : "background 120ms ease",
+            }}
+          >
+            <div
+              style={{
+                position: "absolute",
+                top: 0,
+                bottom: 0,
+                left: "50%",
+                transform: "translateX(-50%)",
+                width: 1,
+                background: theme.outlineVariant,
+              }}
+            />
+          </div>
+
+          <div
+            style={{
+              width: `${detailWidthPct}%`,
+              transition: isDragging ? "none" : "width 220ms ease",
+              minWidth: 0,
+              border: `1px solid ${theme.outlineVariant}`,
+              borderRadius: 4,
+              boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+              overflow: "hidden",
+            }}
+          >
+            {detail}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -1094,20 +1275,13 @@ function IncidentDetailModal({
 // Root component — this is what you actually render: <IncidentDashboard />
 // ---------------------------------------------------------------------------
 
-// Rows shown per page. Raise this if you want fewer page-turns / more rows
-// visible at once (the backend's page_size default doesn't matter — this
-// value is always sent explicitly).
 const PAGE_SIZE = 6;
 
-// The exact title text shown on each KPI tile and on the "Showing: ..."
-// filter chip. Edit the strings on the right to change what's displayed —
-// this is purely display text and doesn't need to match anything in the
-// backend.
 const TILE_LABELS: Record<Exclude<TileFilter, null>, string> = {
-  P1_P2_WFT: "P1 & P2 — WFT-Wide",
+  P1_P2: "P1 & P2 — WFT-Wide",
   COO_CAUSED: "Major Incidents — COO Caused",
   COO_IMPACTED: "Major Incidents — COO Impacted",
-  TCOO_CAUSED: "P3 & P4 — TCOO Caused",
+  P3_P4_TECHCT: "P3 & P4 — TCOO Caused",
 };
 
 export interface IncidentDashboardProps {
@@ -1116,41 +1290,69 @@ export interface IncidentDashboardProps {
 }
 
 export default function IncidentDashboard({ apiBaseUrl = "" }: IncidentDashboardProps) {
-  // --- What the user has selected (all the ways the table can be filtered/sorted) ---
-  const [tileFilter, setTileFilter] = useState<TileFilter>(null); // which KPI tile is clicked, if any
-  const [priorityFilter, setPriorityFilter] = useState<Priority | "">(""); // Priority dropdown
-  const [statusFilter, setStatusFilter] = useState<IncidentStatus | "">(""); // Status dropdown
-  const [searchInput, setSearchInput] = useState(""); // what's typed in the search box right now (every keystroke)
-  const [debouncedSearch, setDebouncedSearch] = useState(""); // the search text AFTER the 300ms debounce below — this is what actually gets sent to the API
-  const [sortBy, setSortBy] = useState<SortField | null>(null); // which column header was clicked
-  const [sortDir, setSortDir] = useState<SortDir>("asc"); // asc/desc for that column
-  const [page, setPage] = useState(1); // current page number
-  const [selectedIncidentNumber, setSelectedIncidentNumber] = useState<string | null>(null); // which row's modal is open (null = modal closed)
+  // --- Filters ---
+  const [tileFilter, setTileFilter] = useState<TileFilter>(null);
+  const [priorityFilter, setPriorityFilter] = useState<Priority | "">("");
+  const [statusFilter, setStatusFilter] = useState<IncidentStatus | "">("");
+  const [majorIncidentFilter, setMajorIncidentFilter] = useState<"" | "true" | "false">("");
+  const [tcooCausedFilter, setTcooCausedFilter] = useState<"" | "true" | "false">("");
+  const [tcooImpactedFilter, setTcooImpactedFilter] = useState<"" | "true" | "false">("");
+  const [openDateFrom, setOpenDateFrom] = useState("");
+  const [openDateTo, setOpenDateTo] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [advancedValues, setAdvancedValues] = useState<Record<string, string>>({});
+  const [filterOptions, setFilterOptions] = useState<FilterOptions>({});
 
-  // --- Data fetched from the backend ---
-  const [incidents, setIncidents] = useState<Incident[]>([]); // the current page of rows
-  const [total, setTotal] = useState(0); // total matching rows, across all pages (for "Showing X-Y of Z")
-  const [summary, setSummary] = useState<SummaryResponse | null>(null); // the 4 KPI tile numbers
+  // --- Sort / paging / selection ---
+  const [sortBy, setSortBy] = useState<SortField | null>(null);
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [page, setPage] = useState(1);
+  const [selectedIncidentNumber, setSelectedIncidentNumber] = useState<string | null>(null);
 
-  // --- Request status ---
+  // --- Data from the backend ---
+  const [incidents, setIncidents] = useState<IncidentRowData[]>([]);
+  const [total, setTotal] = useState(0);
+  const [summary, setSummary] = useState<SummaryResponse | null>(null);
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Debounce the search box so we don't fire a request on every keystroke.
+  // Debounce the search box.
   useEffect(() => {
     const timeout = window.setTimeout(() => setDebouncedSearch(searchInput.trim()), 300);
     return () => window.clearTimeout(timeout);
   }, [searchInput]);
 
-  // Whenever any filter/search/sort changes, jump back to page 1 — otherwise
-  // you could be stuck on "page 4" of a search that only has 1 page of results.
+  // Load the Advanced Filter dropdown options once on mount.
+  useEffect(() => {
+    getFilterOptions(apiBaseUrl)
+      .then(setFilterOptions)
+      .catch(() => {
+        /* non-fatal — advanced filter dropdowns just show no options */
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiBaseUrl]);
+
+  // Any filter/search/sort change resets to page 1.
   useEffect(() => {
     setPage(1);
-  }, [tileFilter, priorityFilter, statusFilter, debouncedSearch, sortBy, sortDir]);
+  }, [
+    tileFilter,
+    priorityFilter,
+    statusFilter,
+    majorIncidentFilter,
+    tcooCausedFilter,
+    tcooImpactedFilter,
+    openDateFrom,
+    openDateTo,
+    debouncedSearch,
+    advancedValues,
+    sortBy,
+    sortDir,
+  ]);
 
-  // The main data fetch. Re-runs any time something in the dependency array
-  // at the bottom of this effect changes — that's what makes clicking a
-  // tile/filter/header/page-button actually update the table.
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -1161,9 +1363,15 @@ export default function IncidentDashboard({ apiBaseUrl = "" }: IncidentDashboard
         tile: tileFilter,
         priority: priorityFilter,
         status: statusFilter,
+        majorIncident: majorIncidentFilter,
+        tcooCaused: tcooCausedFilter,
+        tcooImpacted: tcooImpactedFilter,
+        openDateFrom,
+        openDateTo,
         q: debouncedSearch,
         sortBy,
         sortDir,
+        advanced: advancedValues,
         page,
         pageSize: PAGE_SIZE,
       }),
@@ -1179,8 +1387,8 @@ export default function IncidentDashboard({ apiBaseUrl = "" }: IncidentDashboard
         if (cancelled) return;
         const message =
           err instanceof ApiError
-            ? `Could not reach the incidents API (${err.status}). Is the backend router mounted?`
-            : "Could not reach the incidents API. Is the backend router mounted?";
+            ? `Could not reach the incidents API (${err.status}). Is the backend blueprint registered?`
+            : "Could not reach the incidents API. Is the backend blueprint registered?";
         setError(message);
       })
       .finally(() => {
@@ -1190,16 +1398,27 @@ export default function IncidentDashboard({ apiBaseUrl = "" }: IncidentDashboard
     return () => {
       cancelled = true;
     };
-  }, [apiBaseUrl, tileFilter, priorityFilter, statusFilter, debouncedSearch, sortBy, sortDir, page]);
+  }, [
+    apiBaseUrl,
+    tileFilter,
+    priorityFilter,
+    statusFilter,
+    majorIncidentFilter,
+    tcooCausedFilter,
+    tcooImpactedFilter,
+    openDateFrom,
+    openDateTo,
+    debouncedSearch,
+    advancedValues,
+    sortBy,
+    sortDir,
+    page,
+  ]);
 
-  // Clicking a tile that's already selected clears the filter; clicking a
-  // different tile switches to it.
   function toggleTile(next: Exclude<TileFilter, null>) {
     setTileFilter((current) => (current === next ? null : next));
   }
 
-  // Clicking a column header: if it's already the active sort column, flip
-  // asc<->desc. If it's a different column, switch to it and start at asc.
   function handleSort(field: SortField) {
     setSortBy((current) => {
       if (current === field) {
@@ -1211,100 +1430,53 @@ export default function IncidentDashboard({ apiBaseUrl = "" }: IncidentDashboard
     });
   }
 
-  const selectStyle: CSSProperties = {
-    border: `1px solid ${theme.outlineVariant}`,
-    background: theme.surface,
-    borderRadius: 4,
-    padding: "6px 12px",
-    fontFamily: fontBody,
-    fontSize: 14,
-    color: theme.onSurface,
-    outline: "none",
-    boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
-  };
+  function setAdvancedValue(key: string, value: string) {
+    setAdvancedValues((current) => {
+      const next = { ...current };
+      if (value) next[key] = value;
+      else delete next[key];
+      return next;
+    });
+  }
 
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16, fontFamily: fontBody }}>
-      {/* This <style> tag only defines the "Bridge Active" status-dot pulse
-          animation — the one thing inline styles can't express. */}
-      <style>{"@keyframes ic-pulse{0%,100%{opacity:1}50%{opacity:.35}}"}</style>
+  const advancedActiveCount = Object.keys(advancedValues).length;
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 16 }}>
-        <div>
-          <h2 style={{ fontFamily: fontHeadline, fontSize: 30, fontWeight: 700, color: theme.onBackground, margin: "0 0 4px" }}>
-            COO Major Incident Dashboard
-          </h2>
-          <p style={{ fontFamily: fontBody, fontSize: 15, color: theme.onSurfaceVariant, margin: 0 }}>
-            Real-time view for SOD ops calls — click a tile to filter, click a row for full detail.
-          </p>
-        </div>
+  const mainContent = (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16, fontFamily: fontBody, paddingRight: selectedIncidentNumber ? 16 : 0 }}>
+      {/* This <style> tag defines two keyframe animations used elsewhere in this
+          file: "ic-pulse" for the "In Progress" status dot, and "ic-twinkle"
+          for the sparkle icon on the AI-Generated Summary box (AiSummaryCard). */}
+      <style>
+        {
+          "@keyframes ic-pulse{0%,100%{opacity:1}50%{opacity:.35}}" +
+          "@keyframes ic-twinkle{0%,100%{opacity:.5;transform:scale(0.85)}50%{opacity:1;transform:scale(1.15)}}"
+        }
+      </style>
 
-        <div style={{ display: "flex", alignItems: "flex-end", gap: 12, flexWrap: "wrap" }}>
-          <div style={{ position: "relative" }}>
-            <span
-              style={{
-                position: "absolute",
-                left: 10,
-                top: "50%",
-                transform: "translateY(-50%)",
-                color: theme.onSurfaceVariant,
-                display: "flex",
-              }}
-            >
-              <IconSearch size={16} />
-            </span>
-            <input
-              type="text"
-              placeholder="Search incidents..."
-              value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
-              style={{ ...selectStyle, width: 220, padding: "6px 12px 6px 32px" }}
-              aria-label="Search incidents"
-            />
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <label style={{ fontFamily: fontBody, fontSize: 11, fontWeight: 600, color: theme.onSurfaceVariant }} htmlFor="priority-filter">
-              Priority
-            </label>
-            <select
-              id="priority-filter"
-              style={{ ...selectStyle, width: 128 }}
-              value={priorityFilter}
-              onChange={(e) => setPriorityFilter(e.target.value as Priority | "")}
-            >
-              <option value="">All Priorities</option>
-              <option value="P1">P1 - Critical</option>
-              <option value="P2">P2 - High</option>
-              <option value="P3">P3 - Medium</option>
-              <option value="P4">P4 - Low</option>
-            </select>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <label style={{ fontFamily: fontBody, fontSize: 11, fontWeight: 600, color: theme.onSurfaceVariant }} htmlFor="status-filter">
-              Status
-            </label>
-            <select
-              id="status-filter"
-              style={{ ...selectStyle, width: 160 }}
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value as IncidentStatus | "")}
-            >
-              <option value="">All Statuses</option>
-              <option value="Bridge Active">Bridge Active</option>
-              <option value="Pending Vendor">Pending Vendor</option>
-              <option value="Investigating">Investigating</option>
-            </select>
-          </div>
-        </div>
+      <div>
+        <h2 style={{ fontFamily: fontHeadline, fontSize: 30, fontWeight: 700, color: theme.onBackground, margin: "0 0 4px" }}>
+          COO Major Incident Dashboard
+        </h2>
+        <p style={{ fontFamily: fontBody, fontSize: 15, color: theme.onSurfaceVariant, margin: 0 }}>
+          Real-time view for SOD ops calls — click a tile to filter, click a row for full detail.
+        </p>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 24 }}>
+      {/* KPI tiles — Total first (red, emphasized), then the original 4. */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 24 }}>
         <KpiTile
-          label={TILE_LABELS.P1_P2_WFT}
-          value={summary?.p1_p2_wft ?? "—"}
+          label="Total Incidents"
+          value={summary?.total ?? "—"}
+          subtext={summary ? `Resolved ${summary.total_resolved} · Open ${summary.total_open}` : undefined}
+          emphasized
+          selected={false}
+        />
+        <KpiTile
+          label={TILE_LABELS.P1_P2}
+          value={summary?.p1_p2 ?? "—"}
           restingAccent={theme.error}
-          selected={tileFilter === "P1_P2_WFT"}
-          onClick={() => toggleTile("P1_P2_WFT")}
+          selected={tileFilter === "P1_P2"}
+          onClick={() => toggleTile("P1_P2")}
         />
         <KpiTile
           label={TILE_LABELS.COO_CAUSED}
@@ -1320,10 +1492,10 @@ export default function IncidentDashboard({ apiBaseUrl = "" }: IncidentDashboard
           onClick={() => toggleTile("COO_IMPACTED")}
         />
         <KpiTile
-          label={TILE_LABELS.TCOO_CAUSED}
-          value={summary?.tcoo_caused ?? "—"}
-          selected={tileFilter === "TCOO_CAUSED"}
-          onClick={() => toggleTile("TCOO_CAUSED")}
+          label={TILE_LABELS.P3_P4_TECHCT}
+          value={summary?.p3_p4_techct ?? "—"}
+          selected={tileFilter === "P3_P4_TECHCT"}
+          onClick={() => toggleTile("P3_P4_TECHCT")}
         />
       </div>
 
@@ -1354,6 +1526,169 @@ export default function IncidentDashboard({ apiBaseUrl = "" }: IncidentDashboard
         </div>
       )}
 
+      {/* Basic filter row */}
+      <div style={{ display: "flex", alignItems: "flex-end", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ position: "relative" }}>
+          <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: theme.onSurfaceVariant, display: "flex" }}>
+            <IconSearch size={16} />
+          </span>
+          <input
+            type="text"
+            placeholder="Search incidents..."
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            style={{ ...selectStyle, width: 200, padding: "6px 12px 6px 32px" }}
+            aria-label="Search incidents"
+          />
+        </div>
+
+        <FilterField label="Open Date From" htmlFor="open-date-from">
+          <input
+            id="open-date-from"
+            type="date"
+            value={openDateFrom}
+            onChange={(e) => setOpenDateFrom(e.target.value)}
+            style={{ ...selectStyle, width: 150 }}
+          />
+        </FilterField>
+        <FilterField label="Open Date To" htmlFor="open-date-to">
+          <input
+            id="open-date-to"
+            type="date"
+            value={openDateTo}
+            onChange={(e) => setOpenDateTo(e.target.value)}
+            style={{ ...selectStyle, width: 150 }}
+          />
+        </FilterField>
+
+        <FilterField label="Priority" htmlFor="priority-filter">
+          <select
+            id="priority-filter"
+            style={{ ...selectStyle, width: 120 }}
+            value={priorityFilter}
+            onChange={(e) => setPriorityFilter(e.target.value as Priority | "")}
+          >
+            <option value="">All Priorities</option>
+            <option value="P1">P1</option>
+            <option value="P2">P2</option>
+            <option value="P3">P3</option>
+            <option value="P4">P4</option>
+            <option value="P5">P5</option>
+          </select>
+        </FilterField>
+
+        <FilterField label="Status" htmlFor="status-filter">
+          <select
+            id="status-filter"
+            style={{ ...selectStyle, width: 150 }}
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as IncidentStatus | "")}
+          >
+            <option value="">All Statuses</option>
+            <option value="New">New</option>
+            <option value="In Progress">In Progress</option>
+            <option value="Resolved">Resolved</option>
+            <option value="Closed">Closed</option>
+          </select>
+        </FilterField>
+
+        <FilterField label="Major Incident" htmlFor="major-incident-filter">
+          <select
+            id="major-incident-filter"
+            style={{ ...selectStyle, width: 100 }}
+            value={majorIncidentFilter}
+            onChange={(e) => setMajorIncidentFilter(e.target.value as "" | "true" | "false")}
+          >
+            <option value="">All</option>
+            <option value="true">Yes</option>
+            <option value="false">No</option>
+          </select>
+        </FilterField>
+
+        <FilterField label="TCOO-Caused" htmlFor="tcoo-caused-filter">
+          <select
+            id="tcoo-caused-filter"
+            style={{ ...selectStyle, width: 100 }}
+            value={tcooCausedFilter}
+            onChange={(e) => setTcooCausedFilter(e.target.value as "" | "true" | "false")}
+          >
+            <option value="">All</option>
+            <option value="true">Yes</option>
+            <option value="false">No</option>
+          </select>
+        </FilterField>
+
+        <FilterField label="TCOO-Impacted" htmlFor="tcoo-impacted-filter">
+          <select
+            id="tcoo-impacted-filter"
+            style={{ ...selectStyle, width: 100 }}
+            value={tcooImpactedFilter}
+            onChange={(e) => setTcooImpactedFilter(e.target.value as "" | "true" | "false")}
+          >
+            <option value="">All</option>
+            <option value="true">Yes</option>
+            <option value="false">No</option>
+          </select>
+        </FilterField>
+
+        <button
+          type="button"
+          onClick={() => setAdvancedOpen((v) => !v)}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            background: advancedOpen ? theme.tertiaryContainer : theme.surface,
+            border: `1px solid ${theme.outlineVariant}`,
+            borderRadius: 4,
+            padding: "7px 14px",
+            fontFamily: fontBody,
+            fontSize: 13,
+            fontWeight: 600,
+            color: theme.onSurface,
+            cursor: "pointer",
+          }}
+        >
+          Advanced Filters{advancedActiveCount > 0 ? ` (${advancedActiveCount})` : ""}
+          <span style={{ display: "flex", transform: advancedOpen ? "rotate(180deg)" : undefined, transition: "transform 120ms ease" }}>
+            <IconChevronDown size={14} />
+          </span>
+        </button>
+      </div>
+
+      {/* Advanced filter panel */}
+      {advancedOpen && (
+        <div
+          style={{
+            background: theme.surfaceContainerLow,
+            border: `1px solid ${theme.outlineVariant}`,
+            borderRadius: 4,
+            padding: 16,
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
+            gap: 12,
+          }}
+        >
+          {ADVANCED_FILTER_FIELDS.map(({ key, label }) => (
+            <FilterField key={key} label={label} htmlFor={`adv-${key}`}>
+              <select
+                id={`adv-${key}`}
+                style={{ ...selectStyle, width: "100%" }}
+                value={advancedValues[key] || ""}
+                onChange={(e) => setAdvancedValue(key, e.target.value)}
+              >
+                <option value="">All</option>
+                {(filterOptions[key] || []).map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+            </FilterField>
+          ))}
+        </div>
+      )}
+
       <IncidentsTable
         incidents={incidents}
         loading={loading}
@@ -1363,18 +1698,17 @@ export default function IncidentDashboard({ apiBaseUrl = "" }: IncidentDashboard
         pageSize={PAGE_SIZE}
         sortBy={sortBy}
         sortDir={sortDir}
+        selectedIncidentNumber={selectedIncidentNumber}
         onSort={handleSort}
         onPageChange={setPage}
         onRowOpen={setSelectedIncidentNumber}
       />
-
-      {selectedIncidentNumber && (
-        <IncidentDetailModal
-          apiBaseUrl={apiBaseUrl}
-          incidentNumber={selectedIncidentNumber}
-          onClose={() => setSelectedIncidentNumber(null)}
-        />
-      )}
     </div>
   );
+
+  const detailContent = selectedIncidentNumber ? (
+    <IncidentDetailPanel apiBaseUrl={apiBaseUrl} incidentNumber={selectedIncidentNumber} onClose={() => setSelectedIncidentNumber(null)} />
+  ) : null;
+
+  return <SplitPane main={mainContent} detail={detailContent} />;
 }
